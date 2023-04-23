@@ -1,0 +1,919 @@
+%clear workspace variables, command window output, close all figures
+clear; close all; clc
+
+%% setup, load data
+%location of this script
+scriptPath = fileparts(matlab.desktop.editor.getActiveFilename);
+dataDir = scriptPath;
+%save figures in a subfolder of where the script is located
+savedir = fullfile(dataDir,'figures');
+if ~exist(savedir,'dir'), mkdir(savedir); end
+
+%variable descriptions
+%tvec - time points at which SMAD4 and SOX2 are sampled
+%SMAD4 - input SMAD4 dynamics
+%SOX2 - resulting SOX2 dynamics
+%ISL1 - end-point ISL1
+
+%metadata
+load(fullfile(dataDir,'meta.mat'))
+
+%load data from 220905 experiment
+load(fullfile(dataDir,'SMAD4_SOX2_220905.mat'))
+SOX2_220905 = SOX2;
+ISL1_220905 = load(fullfile(dataDir,'ISL1_220905.mat'));
+ntime = length(tvec);
+ncond = size(SOX2,2);
+
+%load data from 220830 experiment
+ISL1_220830 = load(fullfile(dataDir,'ISL1_220830_combined.mat'));
+SOX2_220830 = load(fullfile(dataDir,'SOX2_220830.mat'),'SOX2');
+SOX2_220830 = SOX2_220830.SOX2;
+
+%average between the two experiments
+SOX2avg = (SOX2_220830 + SOX2_220905)/2;
+ISL1avg = (ISL1_220830.ISL1m + ISL1_220905.ISL1m)/2;
+ISL1avgerr = (ISL1_220830.ISL1err + ISL1_220905.ISL1err)/2;
+
+%load SMAD4 signaling data
+load(fullfile(dataDir,'S4levels.mat'))
+SMAD4_220629 = load(fullfile(dataDir,'SMAD4_220629'));
+SMAD4_220629 = preprocess_SMAD4_220629(SMAD4_220629);
+SMAD4_220629 = SMAD4_220629(1:ntime,:);
+SMAD4_ideal = makeIdealS4(tvec,s4levels);
+
+%conditions to use for model training -> just 42-hour conditions
+trainconds = [1:8,17];
+nconds = length(trainconds);
+treatmentTime = 4;
+
+%dset can be 'avg', '220830', '220905'; avg was used for final figures
+dset = 'avg';
+if strcmp(dset,'avg')
+    SOX2 = SOX2avg;
+    ISL1 = ISL1avg;
+    ISL1err = ISL1avgerr;
+elseif strcmp(dset,'220830')
+    SOX2 = SOX2_220830;
+    ISL1 = ISL1_220830.ISL1m;
+    ISL1err = ISL1_220830.ISL1err;
+elseif strcmp(dset,'220905')
+    SOX2 = SOX2_220905;
+    ISL1 = ISL1_220905.ISL1m;
+    ISL1err = ISL1_220905.ISL1err;
+end
+
+%use simplified SMAD4 dynamics inferred from the level measured in another
+%experiment
+s4 = 'idealS4';
+if strcmp(s4,'idealS4')
+    SMAD4 = SMAD4_ideal;
+elseif strcmp(s4,'220629')
+    SMAD4 = SMAD4_220629;
+end
+integrals = mean(SMAD4,1);
+
+%set ISL1 to zero at mTeSR control
+ISL1n = ISL1 - ISL1(end);
+%don't fit to below-zero noise
+ISL1n(ISL1n < 0) = 0;
+
+%initial SOX2 (should just be 1 because of normalization)
+y0 = mean(SOX2(tvec <= 0,:),'all');
+
+%graphical options (font size, legend font size, line width)
+fs = 28; lfs = 20; lw = 3;
+
+%% compare SOX2 from 220830, 220905, and their mean
+maxval = max([max(SOX2_220905,[],'all'),max(SOX2_220830,[],'all')]);
+minval = min([min(SOX2_220905,[],'all'),min(SOX2_220830,[],'all')]);
+
+margin = 0.04;
+figure('WindowState','maximized')
+for ii = 1:size(SOX2_220905,2)
+    subplot_tight(3,8,ii,margin); hold on
+    v1 = SOX2_220830(:,ii);
+    v2 = SOX2_220905(:,ii);
+    v3 = SOX2avg(:,ii);
+    
+    plot(tvec,v1,'LineWidth',lw)
+    plot(tvec,v2,'--','LineWidth',lw)
+    plot(tvec,v3,':','LineWidth',lw)
+    cleanSubplot(20); axis square
+    xlim(tvec([1,end])); ylim([minval,maxval])
+    xlabel('time (hours)'); ylabel('GFP::SOX2 (au)')
+    if ii == size(SOX2avg,2)
+        legend('220830','220905','mean','Location','southeast','FontSize',16)
+    end
+end
+savefigure(fullfile(savedir,'SOX2_experiment_comparison.png'))
+
+%% SMAD4-SOX2 inhibition function
+%on short intervals along the SOX2 histories, find the average SMAD4
+%signaling level, average SOX2 level, and fit a line to the SOX2 data on
+%the interval to estimate the slope
+%this allows us to directly estimate the form of the inhibition function of
+%SMAD4 on SOX2
+savedir = fullfile(dataDir,[dset,'_SOX2_',s4,'_SMAD4'],'SOX2');
+if ~exist(savedir,'dir'), mkdir(savedir); end
+margin = 0.1;
+
+%conditions
+conds = 1:8;
+nc = length(conds);
+
+%time points in hours at which to estimate SOX2 level and slope
+pts = 2:40;
+% pts = 2:16;
+
+%window over which to average
+window = 4;
+npts = length(pts);
+sox2avg = zeros(npts,nc);
+smad4avg = zeros(npts,nc);
+slopes = zeros(npts,nc);
+
+for ci = 1:nc
+    cidx = conds(ci);
+    for ii = 1:npts
+        mask = tvec >= pts(ii) - window/2 & tvec <= pts(ii) + window/2;
+        t = tvec(mask); sox2 = SOX2(mask,cidx); smad4 = SMAD4(mask,cidx);
+        sox2avg(ii,cidx) = mean(sox2); smad4avg(ii,cidx) = mean(smad4);
+        mb = [t',ones(size(t'))]\sox2;
+        slopes(ii,cidx) = mb(1);
+    end
+end
+x = smad4avg(:); y = sox2avg(:); z = slopes(:);
+
+figure('Position',figurePosition(3*560,560))
+subplot_tight(1,3,1,margin); hold on
+colorscatter(x,y,z)
+cleanSubplot; axis square; colormap turbo
+xlabel('smad4'); ylabel('sox2'); h = colorbar; h.Label.String = 'dydt';
+title('data')
+
+%linear model of SOX2 inhibition
+lfo = fitoptions('Method','NonlinearLeastSquares',...
+               'Lower',[0,0,0],...
+               'Upper',[Inf,Inf,Inf],...
+               'StartPoint',[0.058, 0.058, 0.058]);
+lft = fittype(@(beta,lambda,alpha,x,y) beta - lambda*x - alpha*y,...
+    'independent', {'x', 'y'}, 'dependent', 'z', 'options', lfo);
+[fitobject,gof] = fit([x,y],z,lft);
+
+lambda = fitobject.lambda;
+alpha = fitobject.alpha;
+beta = fitobject.beta;
+
+subplot_tight(1,3,2,margin); hold on
+scatter3(x,y,z,'filled')
+
+xx = linspace(0,1.3,500);
+yy = linspace(0,1,500);
+[XX,YY] = meshgrid(xx,yy);
+surf(XX,YY,beta - lambda*XX - alpha*YY,'LineStyle','none')
+xlabel('SMAD4'); ylabel('SOX2'); h = colorbar; h.Label.String = 'dydt';
+cleanSubplot; axis square; colormap turbo
+title('fit')
+colorbar
+
+subplot_tight(1,3,3,margin); hold on
+zp = beta - lambda*x - alpha*y;
+colorscatter(x,y,z - zp)
+cleanSubplot; axis square; colormap turbo
+xlabel('SMAD4'); ylabel('SOX2'); h = colorbar; h.Label.String = 'residuals';
+title('residuals')
+
+savefigure(fullfile(dataDir,'planeFitTodSOX2dt.png'))
+
+%% compare SOX2 model to data for all conditions
+
+opts = struct('alpha',alpha,'beta',beta,'lambda',lambda);
+tspan = [0,tvec(end)];
+
+figure('Position',figurePosition(2560,960))
+for ii = 1:size(SOX2,2)
+        
+    cidx = ii;
+    S4 = SMAD4(:,cidx);
+    ic = mean(SOX2(1:treatmentTime,cidx));
+    [t,y] = ode45(@(t,y) SOX2_linear(t,y,tvec,S4,opts), tspan, ic);
+
+    subplot(3,8,ii); hold on
+    v1 = SOX2_220830(:,cidx);
+    v2 = SOX2_220905(:,cidx);
+    p1 = fill([tvec';tvec(end:-1:1)'],[v1;v2(end:-1:1)],[0 0.4470 0.7410],'FaceAlpha',0.4,'LineStyle','none');
+    plot(tvec,SOX2_220830(:,cidx),'LineWidth',1.5,'Color',[0 0.4470 0.7410 1])
+    plot(tvec,SOX2_220905(:,cidx),'LineWidth',1.5,'Color',[0 0.4470 0.7410 1])
+    
+    p2 = plot(t,y,'LineWidth',3,'Color',[0.8500 0.3250 0.0980]);
+    
+    cleanSubplot(12); axis square
+    ylim([0,1.1]); xlim([0,tvec(end)])
+    if ii == 1
+        legend([p1,p2],'target','calculated')
+    end
+    title(meta.conditions(ii))
+    ylabel('SOX2::GFP'); xlabel('time (hrs)')
+end
+saveas(gcf,fullfile(savedir,'SOX2_naivefitvdata.png'))
+
+%% plot model fit on data for conditions by duration
+
+conds = {[1:8,17],[9:16,17]};
+
+for ii = 1:length(conds)
+    colors = turbo(length(conds{ii}));
+    colors = colors(end:-1:1,:);
+    figure('Position',figurePosition([560 560]))
+    hold on
+    p = gobjects(length(conds{ii}),1);
+    for jj = 1:length(conds{ii})
+        cidx = conds{ii}(jj);
+        S4 = SMAD4(:,cidx);
+        ic = mean(SOX2(1:treatmentTime,cidx));
+        [t,y] = ode45(@(t,y) SOX2_linear(t,y,tvec,S4,opts), tspan, ic);
+        
+        plot(t,y,'LineWidth',3,'Color',[colors(jj,:),0.5])
+        p(jj) = plot(tvec,SOX2(:,conds{ii}(jj)),'LineWidth',1.5,'Color',[colors(jj,:),1]);
+    end
+    hold off
+    cleanSubplot(fs); axis square
+    xlim([min(tvec),max(tvec)])
+    
+    ylabel('SOX2::GFP (au)')
+    xlabel('time (hr)')
+    ylim([0,max(SOX2,[],'all')])
+    
+    savefigure(fullfile(savedir,...
+        strcat('SOX2_',savelabels{ii},'_avgHistories.png')))
+end
+
+%% model for ISL1 accumulation in response to SMAD4 and SOX2
+tmax = 42;
+tspan = [0,tmax];
+ic = 0;
+
+%start with manually chosen values based on SOX2 fit above
+alphai = 0.0363;
+betai = alphai;
+lambdai = 0.0329;
+
+opts = struct(...
+    'lambdai',  lambdai,...
+    'alphai',   alphai,...
+    'Ksi',      0.3,...
+    'n',        4);
+%fields over which to optimize
+fields = {'lambdai','alphai','Ksi'};
+nt = length(fields);
+
+%% fit ISL1 model parameters with real SOX2, SMAD4 inputs
+%use simulated annealing to fit parameters
+%create a folder to save results
+savedir = fullfile(dataDir,[dset,'_SOX2_',s4,'_SMAD4'],'ISL1');
+if ~exist(savedir,'dir'), mkdir(savedir); end
+
+%set hyperparameters
+mu = zeros(nt,1); %zero vector for mean of gaussian rv
+sigma = 5e-5; %variance determines the step size for each parameter 
+Sigma = diag(sigma*[1 1 1]); %diagonal covariance matrix
+tempmax = 0.1; %'temperature' determines the acceptance criterion
+niters = 1000; %number of iterations per optimization run
+nrepeats = 5; %number of independent repeats of the optimzation procedure
+
+for ri = 1:nrepeats
+    theta = opts2theta(opts,fields);
+    newopts = theta2opts(theta,opts,fields);
+    V = NaN(nconds,1);
+    %simulate once to determine initial error
+    parfor idx = 1:nconds
+        cidx = trainconds(idx);
+        S4 = SMAD4(:,cidx); S2 = SOX2(:,cidx); %#ok<PFBNS>
+        [~,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic);
+        V(idx) = y(end);
+    end
+    
+    errold = mean(sum((ISL1n(trainconds) - V).^2));
+    fprintf('MSE = %g\n',errold)
+    
+    %initialize variables to store intermediate cost and parameter values
+    thetas = zeros(nt,niters);
+    costs = zeros(niters,1);
+    oldcosts = zeros(niters,1);
+    naccept = 0;
+    close all
+    tic
+    %show the error over time
+    figure('Position',[1000 602 1250 750])
+    for ii = 1:niters
+        %update parameters with random step
+        thetap = theta + mvnrnd(mu,Sigma,1)';
+        %if any parameters stepped below zero, set them between zero and
+        %their initial value instead
+        halfp = 0.5*theta;
+        thetap(thetap <= 0) = halfp(thetap <= 0);
+        newopts = theta2opts(thetap,opts,fields);
+        %run the simulation over treatment conditions in parallel
+        V = NaN(nconds,1);
+        parfor idx = 1:nconds
+            cidx = trainconds(idx);
+            S4 = SMAD4(:,cidx); S2 = SOX2(:,cidx); %#ok<PFBNS>
+            [~,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic);
+            V(idx) = y(end);
+        end
+        %error with new parameter values
+        errnew = mean(sum((ISL1n(trainconds) - V).^2),'all');
+        
+        costs(ii) = errnew;
+        oldcosts(ii) = errold;
+        thetas(:,ii) = theta';
+
+        %acceptance criterion
+        temp = tempmax*(1 - ii/niters);
+        if exp((errold - errnew)/temp) > rand(1)
+            theta = thetap;
+            errold = errnew;
+            naccept = naccept + 1;
+        end
+        %update the graph of costs every 10 iterations
+        if mod(ii,10) == 0
+            fprintf('.') %progress indicator
+            clf
+            plot(costs(1:ii),'LineWidth',2)
+            hold on
+            plot(oldcosts(1:ii),'LineWidth',2)
+            hold off
+            cleanSubplot
+            xlabel('iterations'); ylabel('mean squared error')
+            axis square
+            drawnow
+        end
+        if mod(ii,500) == 0
+            fprintf('\n')
+        end
+    end
+    fprintf('\nEfficiency = %g\n',naccept/niters)
+    fprintf('MSE = %g\n',errold(end))
+    toc
+    
+    %for each run, save a graph of proposed and accepted costs over
+    %iterations and the associated parameter and cost values as mat files
+    close all
+    figure('Position',figurePosition([1250 750]))
+    plot(costs,'LineWidth',2); hold on
+    plot(oldcosts,'LineWidth',2); hold off
+    xlabel('iterations'); ylabel('mean squared error')
+    cleanSubplot; axis square
+    legend('proposed cost', 'accepted cost')
+    saveas(gcf,fullfile(savedir,sprintf('costs_run%.2d.png',ri)))
+    
+    
+    newopts = theta2opts(theta,opts,fields);
+    save(fullfile(savedir,sprintf('paramValues_run%.2d',ri)),'newopts','thetas','fields','costs','oldcosts')
+    
+    margin = 0.02;
+    close all
+    figure('Position',[10 550 2500 700])
+    idx = 1;
+    for ii = 1:nconds
+        
+        cidx = trainconds(ii);
+        S4 = SMAD4(:,cidx); S2 = SOX2(:,cidx);
+        [t,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic);
+        
+        subplot(2,ceil(nconds/2),idx); hold on
+        plot(t,y,'LineWidth',3,'Color',[0 0.4470 0.7410 1])
+        scatter(tvec(end),ISL1n(cidx),30,[0 0.4470 0.7410],'filled')
+        cleanSubplot(12); axis square
+        ylim([0,1.1]); xlim([0,tvec(end)])
+        legend('calculated','target')
+        idx = idx + 1;
+        ylabel('ISL1 (au)'); xlabel('time (hrs)')
+    end
+    saveas(gcf,fullfile(savedir,sprintf('ISL1curves_run%.2d.png',ri)))
+    
+end
+
+
+%% run the model for all conditions
+close all
+
+for ri = 1:nrepeats
+    load(fullfile(savedir,sprintf('paramValues_run%.2d',ri)),'newopts')
+    
+    figure('Position',figurePosition(2560,960))
+    sISL1 = NaN(ncond,1);
+    for cidx = 1:size(SOX2,2)
+        subplot(3,8,cidx); hold on
+        S4 = SMAD4(:,cidx); S2 = SOX2(:,cidx);
+        [t,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic);
+        sISL1(cidx) = y(end);
+
+        plot(tvec,S4,'LineWidth',lw)
+        plot(tvec,S2,'LineWidth',lw)
+
+        plot(t,y,'LineWidth',lw); hold on
+        scatter(tvec(end),ISL1n(cidx),100,'filled')
+        cleanSubplot(12)
+        xlabel('time (hr)'); 
+        if mod(cidx - 1,8) == 0
+            ylabel('intensity (au)')
+        end
+
+        if cidx == size(SOX2,2)
+            legend('SMAD4','SOX2','sISL1','target','Location','southwest','FontSize',10)
+        end
+
+        ylim([-0,1.2]); xlim(tvec([1,end]))
+    end
+    saveas(gcf,fullfile(savedir,sprintf('ISL1curves_run%.2d.png',ri)))
+
+
+    inds = {[1:8,17],9:17};
+    colors = [0 0.4470 0.7410; 0.8500 0.3250 0.0980];
+
+    ISL1s = [ISL1n sISL1];
+    alphas = [1 0.5]; markers = {'-x','-o'};
+
+    figure('Position',figurePosition(560,560)); hold on
+    for ii = 1:length(inds)
+        for jj = 1:size(ISL1s,2)
+            if jj == 1
+                errorbar(integrals(inds{ii}),ISL1s(inds{ii},jj),ISL1err(inds{ii}),'Color',[colors(ii,:) alphas(jj)],'LineWidth',lw)
+            elseif jj == 2
+                plot(integrals(inds{ii}),ISL1s(inds{ii},jj),markers{jj},'Color',[colors(ii,:) alphas(jj)],'LineWidth',lw)
+            end
+        end
+    end
+    cleanSubplot(fs); axis square
+    xlabel('SMAD4 integral'); ylabel('ISL1 (au)')
+    saveas(gcf,fullfile(savedir,sprintf('ISL1vIntegral_run%.2d.png',ri)))
+    legend({'42h,target','42h,sim','32h,target','32h,sim'},'FontSize',lfs,'Location','northwest')
+end
+
+%% fit SOX2 with inhibition from ISL1
+%ISL1 parameters from above fit (should stay static while optimizing SOX2
+%to prevent overfitting):
+lambdai = 0.124;
+alphai = 0.09;
+Ksi = 0.266;
+n = 4;
+
+tmax = 42;
+ttmax = find(tvec == tmax);
+T = tvec(treatmentTime:ttmax)';
+ntime = length(T);
+tspan = [0,tmax];
+
+%take a guess for Kis and ns
+Kis = 0.5;
+ns = 2;
+
+%Keep SOX2 parameters from initial fit
+opts = struct('betas',beta,'lambdai',lambdai,'lambda',lambda,...
+    'alphas',alpha,'alphai',alphai,'Ksi',Ksi,'Kis',Kis,'n',n,'ns',ns);
+fields = {'Kis'};
+nt = length(fields);
+
+%% run the optimization
+%create a folder to save results, labeled with the current date
+% c = clock;
+% savedir = sprintf('%d%.2d%.2d',c(1),c(2),c(3));
+% savedir = fullfile(dataDir,'model',savedir(3:end),[dset,'_',s4],'combined');
+% if ~exist(savedir,'dir'), mkdir(savedir); end
+
+savedir = fullfile(dataDir,[dset,'_SOX2_',s4,'_SMAD4'],'combined');
+if ~exist(savedir,'dir'), mkdir(savedir); end
+
+%set hyperparameters
+mu = zeros(nt,1); %zero vector for mean of gaussian rv
+sigma = 5e-5; %variance determines the step size for each parameter 
+% Sigma = diag(sigma*[1 1 1 1]); %diagonal covariance matrix
+Sigma = diag(sigma); %diagonal covariance matrix
+tempmax = 0.1; %'temperature' determines the acceptance criterion
+niters = 1000; %number of iterations per optimization run
+nrepeats = 5; %number of independent repeats of the optimzation procedure
+
+for ri = 1:nrepeats
+    %randomly initialize parameters
+%     theta = rand(nt,1);
+    theta = opts2theta(opts,fields);
+    newopts = theta2opts(theta,opts,fields);
+    V = NaN(ntime,nconds);
+    %simulate once to determine initial error
+    for idx = 1:nconds
+        cidx = trainconds(idx);
+        S4 = SMAD4(:,cidx); % %#ok<PFBNS>
+        ic = [1;0];
+        %dydt = SOX2_ISL1_hybrid(t,y,tvec,SMAD4,opts)
+        [t,y] = ode45(@(t,y) SOX2_ISL1_hybrid(t,y,tvec,S4,newopts), tspan, ic);
+        V(:,idx) = interp1(t,y(:,1),T);
+    end
+    
+    errold = mean(sum((SOX2(treatmentTime:ttmax,trainconds) - V).^2),'all');
+    fprintf('MSE = %g\n',errold)
+    
+    %initialize variables to store intermediate cost and parameter values
+    thetas = zeros(nt,niters);
+    costs = zeros(niters,1);
+    oldcosts = zeros(niters,1);
+    naccept = 0;
+    close all
+    tic
+    %show the error over time
+    figure('Position',[1000 602 1250 750])
+    for ii = 1:niters
+        %update parameters with random step
+        thetap = theta + mvnrnd(mu,Sigma,1)';
+        %if any parameters stepped below zero, set them between zero and
+        %their initial value instead
+        halfp = 0.5*theta;
+        thetap(thetap <= 0) = halfp(thetap <= 0);
+        newopts = theta2opts(thetap,opts,fields);
+        %run the simulation over treatment conditions in parallel
+        V = NaN(ntime,nconds);
+        parfor idx = 1:nconds
+            cidx = trainconds(idx);
+            S4 = SMAD4(:,cidx); %#ok<PFBNS>
+            ic = [1;0];
+            [t,y] = ode45(@(t,y) SOX2_ISL1_hybrid(t,y,tvec,S4,newopts), tspan, ic);
+            V(:,idx) = interp1(t,y(:,1),T);
+        end
+        %error with new parameter values
+        errnew = mean(sum((SOX2(treatmentTime:ttmax,trainconds) - V).^2),'all');
+        
+        costs(ii) = errnew;
+        oldcosts(ii) = errold;
+        thetas(:,ii) = theta';
+
+        %acceptance criterion
+        temp = tempmax*(1 - ii/niters);
+        if exp((errold - errnew)/temp) > rand(1)
+            theta = thetap;
+            errold = errnew;
+            naccept = naccept + 1;
+        end
+        %update the graph of costs every 10 iterations
+        if mod(ii,10) == 0
+            fprintf('.') %progress indicator
+            clf
+            plot(costs(1:ii),'LineWidth',2)
+            hold on
+            plot(oldcosts(1:ii),'LineWidth',2)
+            hold off
+            cleanSubplot
+            xlabel('iterations'); ylabel('mean squared error')
+            axis square
+            drawnow
+        end
+        if mod(ii,500) == 0
+            fprintf('\n')
+        end
+    end
+    fprintf('\nEfficiency = %g\n',naccept/niters)
+    fprintf('MSE = %g\n',errold(end))
+    toc
+    
+    %for each run, save a graph of proposed and accepted costs over
+    %iterations and the associated parameter and cost values as mat files
+    close all
+    figure('Position',figurePosition([1250 750]))
+    plot(costs,'LineWidth',2); hold on
+    plot(oldcosts,'LineWidth',2); hold off
+    xlabel('iterations'); ylabel('mean squared error')
+    cleanSubplot; axis square
+%     ylim([0,4])
+    legend('proposed cost', 'accepted cost')
+    saveas(gcf,fullfile(savedir,sprintf('costs_run%.2d.png',ri)))
+    
+    
+    newopts = theta2opts(theta,opts,fields);
+    save(fullfile(savedir,sprintf('paramValues_run%.2d',ri)),'newopts','thetas','fields','costs','oldcosts')
+    
+    margin = 0.02;
+    close all
+    figure('Position',[10 550 2500 700])
+    idx = 1;
+    for ii = 1:nconds
+        
+        cidx = trainconds(ii);
+        ytest = SOX2(treatmentTime:ttmax,cidx); S4 = SMAD4(:,cidx);
+        
+        ic = [1;0];
+        [t,y] = ode45(@(t,y) SOX2_ISL1_hybrid(t,y,tvec,S4,newopts), tspan, ic);
+        
+        subplot(2,ceil(nconds/2),idx); hold on
+        %SOX2
+        plot(t,y(:,1),'LineWidth',3,'Color',[0 0.4470 0.7410 0.5])
+        plot(T,ytest,'LineWidth',1.5,'Color',[0 0.4470 0.7410 1])
+        %ISL1
+        plot(t,y(:,2),'LineWidth',1.5,'Color',[0.8500 0.3250 0.0980 0.5])
+        scatter(tvec(end),ISL1n(cidx),30,[0.8500 0.3250 0.0980],'filled')
+        
+        cleanSubplot(12); axis square
+        ylim([0,1.1]); xlim([0,tvec(end)])
+        if ii == nconds
+            legend('calculated SOX2','target SOX2','calculated ISL1','target ISL1',...
+                'Location','southeast')
+        end
+        
+        idx = idx + 1;
+        ylabel('SOX2::GFP'); xlabel('time (hrs)')
+    end
+    saveas(gcf,fullfile(savedir,sprintf('SOX2_ISL1_curves_run%.2d.png',ri)))
+    
+end
+% t = NaN; y = NaN; ic = NaN;
+
+%% compare model to experiment for all conditions
+close all
+
+for ri = 1:nrepeats
+    load(fullfile(savedir,sprintf('paramValues_run%.2d',ri)),'newopts')
+
+    figure('Position',figurePosition(2560,960))
+    for ii = 1:size(SOX2,2)
+
+        cidx = ii;
+        ytest = SOX2(:,cidx); S4 = SMAD4(:,cidx);
+
+        ic = [mean(SOX2(1:treatmentTime,cidx));0];
+    %     ic = [1;0];
+        [t,y] = ode45(@(t,y) SOX2_ISL1_hybrid(t,y,tvec,S4,newopts), tspan, ic);
+
+        subplot(3,8,ii); hold on
+        %SOX2
+        plot(t,y(:,1),'LineWidth',3,'Color',[0 0.4470 0.7410 0.5])
+        plot(tvec,ytest,'LineWidth',1.5,'Color',[0 0.4470 0.7410 1])
+        %ISL1
+        plot(t,y(:,2),'LineWidth',1.5,'Color',[0.8500 0.3250 0.0980 0.5])
+        scatter(tvec(end),ISL1n(cidx),30,[0.8500 0.3250 0.0980],'filled')
+
+        cleanSubplot(12); axis square
+        ylim([0,1.1]); xlim([0,tvec(end)])
+        if ii == ncond
+            legend('calculated SOX2','target SOX2','calculated ISL1','target ISL1',...
+                'Location','southeast')
+        end
+        title(meta.conditions(ii))
+        ylabel('SOX2::GFP'); xlabel('time (hrs)')
+    end
+    saveas(gcf,fullfile(savedir,sprintf('all_SOX2_ISL1_curves_run%.2d.png',ri)))
+end
+
+%% plot simulated and measured SOX2 vs time by duration
+close all
+
+paramdir = [scriptPath,'\avg_SOX2_idealS4_SMAD4\combined'];
+paramname = 'paramValues_run04.mat';
+
+load(fullfile(paramdir,paramname),'newopts')
+
+tspan = [0 42];
+
+conds = {[1:8,17],[9:16,17]};
+% ax = gobjects(length(conds),1);
+legpos = [0.725 0.3634 0.2286 0.5563];
+legstr = meta.conditions(conds{1});
+legstr = strrep(legstr,'LDN',''); legstr = strrep(legstr,',42hr',''); legstr = strrep(legstr,'mTeSR','X');
+titles = {'42 hours','32 hours'}; savelabels = {'42hr','32hr'};
+
+sISL1 = NaN(length(conds{1}),length(conds));
+mISL1 = NaN(length(conds{1}),length(conds));
+errISL1 = NaN(length(conds{1}),length(conds));
+for ii = 1:length(conds)
+    colors = turbo(length(conds{ii}));
+    colors = colors(end:-1:1,:);
+    figure('Position',figurePosition([560 560]))
+    hold on
+    p = gobjects(length(conds{ii}),1);
+    for jj = 1:length(conds{ii})
+        cidx = conds{ii}(jj);
+        S4 = SMAD4(:,cidx);
+        ic = [mean(SOX2(1:treatmentTime,cidx));0];
+%         ic = [1;0];
+        [t,y] = ode45(@(t,y) SOX2_ISL1_hybrid(t,y,tvec,S4,newopts), tspan, ic);
+        plot(t,y(:,1),'LineWidth',3,'Color',[colors(jj,:),0.5])
+        p(jj) = plot(tvec,SOX2(:,cidx),'LineWidth',1.5,'Color',[colors(jj,:),1]);
+        sISL1(jj,ii) = y(end,2);
+        mISL1(jj,ii) = ISL1n(cidx);
+        errISL1(jj,ii) = ISL1err(cidx);
+    end
+    hold off
+    cleanSubplot(fs); axis square
+    xlim([min(tvec),max(tvec)])
+    
+    ylabel('GFP::SOX2 (au)')
+    xlabel('time (hr)')
+%     ylim([-0.05,1.05])%ylim([400,3300])%ylim([600,1800])
+    ylim([min(SOX2,[],'all'), max(SOX2,[],'all')] + [-0.05,0.05])
+    
+    savefigure(fullfile(dataDir,'figures',...
+        strcat('SOX2_',savelabels{ii},'_datavmodel.png')))
+    savefigure(fullfile(paramdir,...
+        strcat('SOX2_',savelabels{ii},'_datavmodel.png')))
+    
+    if ii == 1
+        lgd = legend(p,legstr,'Position',legpos,'FontSize',lfs);
+        title(lgd,{'BMPRi','(nM)'},'FontSize',lfs)
+        savefigure(fullfile(dataDir,'figures',...
+            strcat('SOX2_',savelabels{ii},'_datavmodel_withlegend.png')))
+        savefigure(fullfile(paramdir,...
+            strcat('SOX2_',savelabels{ii},'_datavmodel_withlegend.png')))
+    end
+end
+
+ISL1s = {sISL1,mISL1};
+ylabels = {'simulated ISL1 (au)','ISL1 (au)'};
+legstr = {'42hr','32hr'}; 
+savelabels = {'ISL1simulated','ISL1measured'};
+%add error bars to measured ISL1?
+for jj = 1:length(ISL1s)
+    figure('Position',figurePosition(560,560)); hold on
+    for ii = 1:length(conds)
+        if jj == 1
+            plot(integrals(conds{ii}),ISL1s{jj}(:,ii),'-x','LineWidth',lw)
+        elseif jj == 2
+            errorbar(integrals(conds{ii}),ISL1s{jj}(:,ii),ISL1err(conds{ii}),'LineWidth',lw)
+        end
+    end
+    legend(legstr,'Location','northwest','FontSize',lfs)
+    cleanSubplot(fs); axis square
+    xlabel('SMAD4 integral')
+    ylabel(ylabels{jj})
+    
+    savefigure(fullfile(dataDir,'figures',...
+        strcat(savelabels{jj},'_v_integral.png')))
+    savefigure(fullfile(paramdir,...
+        strcat(savelabels{jj},'_v_integral.png')))
+end
+
+%% early SOX2 slope vs SMAD4 level
+figpos = figurePosition(560,560);
+
+tmask = tvec > 0 & tvec < 16;
+levels = mean(SMAD4(tmask,:),1);
+xx = tvec(tmask); xx = xx(:);
+xinv = pinv([xx,ones(length(xx),1)]);
+
+figure
+mbs = NaN(2,ncond);
+for ii = 1:ncond
+    yy = SOX2(tmask,ii);
+    mb = xinv*yy;
+    mbs(:,ii) = mb;
+    cla
+    plot(tvec,SOX2(:,ii),'o')
+    hold on
+    plot(tvec,mb(1)*tvec + mb(2))
+    ylim([0,max(SOX2,[],'all')])%ylim([75,3500])
+    xlim(tvec([1,end]))
+    title(meta.conditions{ii})
+    disp(meta.conditions{ii})
+    fprintf('m = %g, b = %g\n',mb(1),mb(2))
+    xline(16,'Color','k'); xline(0,'Color','k');
+%     drawnow
+    pause(0.25)
+end
+
+conds = {[1:8,17],9:17};
+legstr = meta.conditions(conds{1});
+legstr = strrep(legstr,'LDN',''); legstr = strrep(legstr,',42hr','');
+figure('Position',figpos); hold on
+for ii = 1:length(conds)
+    plot(mbs(1,conds{ii}),'o','LineWidth',lw,'MarkerSize',15)
+end
+legend('42hr', '32hr','Location','northwest')
+cleanSubplot(fs); axis square
+xticks(1:length(conds{1})); xticklabels(legstr); xtickangle(45)
+ylabel('SOX2 slope (au / hr)')
+xlabel('BMPRi (nM)')
+% savefigure(fullfile(dataDir,'figures','SOX2slopevconditions'))
+
+figure('Position',figpos); hold on
+conds = {[1:8,17],9:17};
+for ii = 1:length(conds)
+    plot(levels(conds{ii}),mbs(1,conds{ii}),'x','LineWidth',lw,'MarkerSize',15)
+end
+
+ll = levels';
+linv = pinv([ll,ones(size(ll))]);
+mb = linv*mbs(1,:)';
+ls = sort(ll);
+plot(ls,mb(1)*ls + mb(2),'LineWidth',lw,'LineStyle','--','Color',[0,0,0,0.65])
+
+% plot(levels(17),mbs(1,17),'o','LineWidth',lw,'Color','k')
+legend('42hr', '32hr','Location','northeast')
+cleanSubplot(fs); axis square
+% xticks(1:9); xticklabels([legstr,{'mTeSR'}]); xtickangle(45)
+ylabel('SOX2 slope (au / hr)')
+xlabel('SMAD4 level')
+savefigure(fullfile(dataDir,'figures',[dset,'_SOX2slopevlevel']))
+
+%% local functions
+
+function opts = theta2opts(theta,opts,fields)
+if length(theta) ~= length(fields)
+    error('mismatch in number of parameters')
+end
+
+for ii = 1:length(theta)
+    opts.(fields{ii}) = theta(ii);
+end
+
+end
+
+
+function theta = opts2theta(opts,fields)
+
+theta = NaN(length(fields),1);
+for ii = 1:length(fields)
+    theta(ii) = opts.(fields{ii});
+end
+
+
+end
+
+function X = preprocess_SMAD4_220629(S4struct)
+
+signalData = S4struct.signalData;
+tvec = S4struct.tvec;
+ntime = length(tvec);
+
+maxcond = 1;
+
+X = cellfun(@(x) mean(x,'omitnan'),signalData);
+%normalize
+maxval = mean(X(:,maxcond));
+minval = mean(X(tvec <= 0,:),'all');
+X = (X - minval)/(maxval - minval);
+
+x1 = X(:,1:8);
+x2 = X(:,9:16);
+
+%interpolate to infer signaling in the 100 nM LDN dose condition
+ds = log10(1 + [0 1 5 10 25 50 250 1000]);
+dq = log10(1 + 100);
+v1 = NaN(ntime,1);
+for ti = 1:ntime
+    vs = x1(ti,:);
+    vq = interp1(ds,vs,dq);
+    v1(ti) = vq;
+end
+
+ds = log10(1 + [0 1 5 10 25 50 250 1000]);
+dq = log10(1 + 100);
+v2 = NaN(ntime,1);
+for ti = 1:ntime
+    vs = x2(ti,:);
+    vq = interp1(ds,vs,dq);
+    v2(ti) = vq;
+end
+
+X = [X(:,[1,3:6]),v1,X(:,7:8),X(:,[9,11:14]),v2,X(:,15:16),zeros(ntime,1)];
+
+end
+
+
+function SMAD4 = makeIdealS4(tvec,s4levels)
+
+ntime = length(tvec);
+nlevel = length(s4levels)-1;
+l2 = s4levels(nlevel);
+
+lambda = 2;
+
+SMAD4 = zeros(ntime,2*nlevel+1);
+for ii = 1:nlevel
+    t1 = tvec >= 0;
+    t2 = tvec >= 32;
+    l1 = s4levels(ii);
+    
+    v1 = s4levels(ii)*(1 - exp(-lambda*tvec(t1)));
+    v2 = l2 + (l1 - l2)*exp(-lambda*(tvec(t2) - 32));
+    
+    SMAD4(t1, ii) = v1;
+    SMAD4(t1, nlevel + ii) = v1;
+    SMAD4(t2, nlevel + ii) = v2;
+end
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

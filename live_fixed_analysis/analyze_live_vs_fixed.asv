@@ -1,0 +1,1462 @@
+%% Load data, make LineageTrace object
+clear; close all;
+scriptPath = fileparts(matlab.desktop.editor.getActiveFilename);
+
+% raw data location, modify if not the same as the location of this script
+dataDir = scriptPath;
+savedir = fullfile(dataDir,'figures');
+if ~exist(savedir,'dir'), mkdir(savedir); end
+
+liveDir = 'D:\220928_Smad4GFP_BMP_IWP2_live';
+% fixedDir = fullfile(liveDir,'fixed');
+fixedDir = fullfile(liveDir,'fixed_aligned\round1');
+
+liveMeta = load(fullfile(liveDir,'meta.mat'));
+liveMeta = liveMeta.meta;
+livePos = load(fullfile(liveDir,'positions.mat'));
+livePos = livePos.positions;
+
+fixedMeta = load(fullfile(fixedDir,'meta.mat'));
+fixedMeta = fixedMeta.meta;
+fixedPos = load(fullfile(fixedDir,'positions.mat'));
+fixedPos = fixedPos.positions;
+
+channelLabels = fixedMeta.channelLabel;
+
+%initialize lineage trace
+lt = LineageTrace(livePos, fixedPos, liveMeta, fixedMeta, liveDir, fixedDir);
+npos = length(lt.live_position);
+
+%get image size
+A = lt.fixed_position(1).loadImage(fixedDir,0,1);
+imsize = size(A,[1,2]);
+clear A
+%number of time points in live imaging
+ntime = lt.live_position(1).nTime;
+nucChannel = 0;
+
+treatmentTime = 4;
+s = strsplit(liveMeta.timeInterval,'min');
+tvec = ((0:ntime-1) - treatmentTime)*str2double(s{1})/60;
+
+%% Map live to fixed
+close all
+positionIdx = 1:npos;
+maxDist = 35;
+mapPoints(lt, maxDist, struct('alignmentMethod','automatic',...
+    'positionIdx',positionIdx));
+
+for ii = positionIdx
+    lt.checkAlignment(ii);
+    cleanSubplot(18)
+    title(sprintf('Position #%d',ii))
+    pause
+    clf
+end
+close all
+
+save(fullfile(dataDir,'lt.mat'),'lt')
+
+%% Or load existing LineageTrace object
+load(fullfile(dataDir,'lt_correctedcyto.mat'))
+
+%% load tracking results & assign fate
+load(fullfile(dataDir,'corrected_tracking','validatedTracking.mat'))
+fields = {'XY','NCratio','nucLevel','cytLevel','nucArea','nucZ',...
+    'nucMajorAxis','nucMinorAxis','labels'};
+
+hists = cell(1,npos);
+for pidx = 1:npos
+    ul = UL(pidx,:); ymin = ul(1); xmin = ul(2);
+    histories = graphSignalingHistories(lt.live_position(pidx),...
+        P(pidx).G,fields,1:length(verified{pidx}));
+    start_times = cellfun(@(x) x(1), {histories.Time});
+    hists{pidx} = histories(start_times==1);
+    
+    XYfinal = lt.live_position(pidx).cellData(end).XY;
+    mapped = lt.mapped_idxs{pidx};
+    nchan = size(lt.fixed_position(pidx).cellData.nucLevel,2);
+    
+    %only keep histories mapped to fixed data
+    cellidxs = cellfun(@(x) x(end), {hists{pidx}.CellIdxs});
+    hists{pidx} = hists{pidx}(ismember(cellidxs,mapped));
+    
+    for ii = 1:length(hists{pidx})
+        %mark each cell as verified or not
+        hists{pidx}(ii).verified = verified{pidx}(hists{pidx}(ii).CellIdxs(end));
+        %determine index of final cell in the history
+        xy = hists{pidx}(ii).XY(end,:) + [xmin ymin];
+        d = sum((XYfinal - xy).^2,2);
+        [~,I] = min(d);
+        if I ~= hists{pidx}(ii).CellIdxs(end)
+            error('indexing is messed up somewhere')
+        end
+        fixedIdx = find(mapped == I);
+        hists{pidx}(ii).fateMarkers = lt.fixed_position(pidx).cellData.nucLevel(fixedIdx,:);
+        hists{pidx}(ii).fixedlabels = lt.fixed_position(pidx).cellData.labels(fixedIdx);
+    end
+    lt.histories{pidx} = hists{pidx};
+end
+
+%% compare ways of building signaling histories
+
+domedfilt = [true false];
+peakremoval = {'heuristic','labelbased','none'};
+
+opts = struct();
+
+AllMat = cell(length(domedfilt),length(peakremoval));
+for ii = 1:length(domedfilt)
+    opts.domedfilt = domedfilt(ii);
+    for jj = 1:length(peakremoval)
+        opts.peakremoval = peakremoval{jj};
+        Mats = lt.histories2mats(1:npos,opts);
+        AllMat{ii,jj} = Mats.NCratio(:,:,2);
+    end
+end
+
+nhists = size(AllMat{1},2);
+legstr = {'+medfilt','-medfilt'};
+figure('Position',figurePosition(560*length(peakremoval),560))
+for hi = 1:nhists
+    hold on
+    for jj = 1:length(peakremoval)
+        subplot(1,length(peakremoval),jj)
+        cla
+        hold on
+        for ii = 1:length(domedfilt)
+            plot(tvec,AllMat{ii,jj}(:,hi))
+        end
+        hold off
+        title(strcat("peak removal = ", peakremoval{jj}))
+        xlim(tvec([1,end]))
+        ylim([0,2])
+        cleanSubplot(18); axis square
+        xlabel('time (hours)')
+        if jj == 1
+            legend(legstr)
+            ylabel('SMAD4 (N:C)')
+        end
+    end
+    pause
+end
+
+
+%% save data matrices as mat file
+
+opts = struct('peakremoval','heuristic','domedfilt',false);
+
+if opts.domedfilt
+    savename = '220928_histories_correctedcyto';
+else
+    savename = '220928_histories_nomedfilt_correctedcyto';
+end
+
+%specify the IF channels to save
+% Mats = lt.histories2mats;
+Mats = lt.histories2mats(1:npos,opts);
+vr = cell2mat(cellfun(@(x) [x.verified], lt.histories, 'UniformOutput', false));
+
+save(fullfile(dataDir,[savename,'.mat']),'liveMeta','fixedMeta','Mats','vr')
+
+%% normalize cell fate data
+
+%choose channels for which to save normalized values
+% channels = [4 3 10 6 7 2 8];
+channels = [4 3 6 13 14 2 8];
+fm = Mats.fateMarkers(channels,:)';
+normalizedChannels = fixedMeta.channelLabel(channels);
+
+%load control data
+cdata = load(fullfile(liveDir,'fixed_aligned','cntrl','positions'));
+cmeta = load(fullfile(liveDir,'fixed_aligned','cntrl','meta'));
+cmeta = cmeta.meta;
+nc = length(channels);
+
+ncond = length(cmeta.conditions);
+ppc = length(cdata.positions)/ncond;
+
+%%
+Ms = cell(ncond,1);
+for cidx = 1:ncond
+    m = cell(ppc,1);
+    for cpi = 1:ppc
+        pidx = (cidx - 1)*ppc + cpi;
+        M = cdata.positions(pidx).cellData.nucLevel(:,channels);
+        nanmask = any(isnan(M),2);
+        labelmask = cdata.positions(pidx).cellData.labels == 1;
+        mask = ~nanmask & labelmask;
+        m{cpi} = M(mask,:);
+    end
+    Ms{cidx} = cell2mat(m);
+end
+
+idx1 = 3; idx2 = 4;
+
+fs = 24; lfs = 18;
+close all
+
+figure('WindowState','maximized')
+np = 100;
+pts = NaN(np,nc);
+mins = NaN(1,nc); maxes = NaN(1,nc);
+normalizedMarkers = NaN(size(fm));
+
+%normalization: would it be better to use averages instead of peaks in the
+%density estimate for each channel in each condition?
+diffs = NaN(1,nc); mids = NaN(1,nc);
+for ii = 1:nc
+    m1 = Ms{idx1}(:,ii); m2 = Ms{idx2}(:,ii);
+    m1(m1 < 1) = 1; m1 = log(m1 + 1);
+    m2(m2 < 1) = 1; m2 = log(m2 + 1);
+    mall = [m1;m2];
+    xl = axlims([m1;m2],[m1;m2],0.003,false);
+    mins(ii) = xl(1); maxes(ii) = xl(2);
+    pts(:,ii) = linspace(xl(1),xl(2),np);
+    
+    subplot_tight(2,4,ii,0.07)
+    [f,xi] = ksdensity(m1,pts(:,ii));
+    plot(xi,f,'LineWidth',3); hold on
+    [~,I] = max(f);
+    max1 = xi(I);
+    
+    [f,xi] = ksdensity(m2,pts(:,ii));
+    plot(xi,f,'LineWidth',3); hold off
+    [~,I] = max(f);
+    max2 = xi(I);
+    
+    cleanSubplot(fs); axis square
+    xlabel(normalizedChannels{ii}); ylabel('density estimate')
+%     if ii == nc
+%         legend(meta.conditions,'FontSize',lfs,'Location','northeast')
+%     end
+    
+    diffs(ii) = abs(max1 - max2); mids(ii) = mean([max1,max2]);
+%     Xnorm(:,ii) = 2*(mall - mids(ii))/diffs(ii);
+    v = fm(:,ii); v(v < 1) = 1; v = log(v + 1);
+    normalizedMarkers(:,ii) = 2*(v - mids(ii))/diffs(ii);
+end
+
+save(fullfile(dataDir,[savename,'.mat']),'liveMeta','fixedMeta',...
+    'Mats','vr','channels','normalizedChannels','normalizedMarkers')
+
+
+%% save as h5 file
+%to save:
+%   all fields of Mats
+%   vr
+%   normalizedMarkers
+%   channels
+%   live channel labels
+%   fixed channel labels
+%   conditions
+%   tvec
+
+% writename = fullfile(dataDir,'220928_histories.h5');
+writename = fullfile(dataDir,[savename,'.h5']);
+
+fields = fieldnames(Mats);
+
+%save data from Mats struct
+for fi = 1:length(fields)
+    field = fields{fi};
+    X = Mats.(field);
+    h5create(writename, ['/',field], size(X))
+    h5write(writename, ['/',field], X)
+end
+
+%vector of times in hours
+X = tvec;
+field = 'tvec';
+h5create(writename, ['/',field], size(X))
+h5write(writename, ['/',field], X)
+
+%boolean specifying whether each trace has been verified
+X = double(vr);
+field = 'vr';
+h5create(writename, ['/',field], size(X))
+h5write(writename, ['/',field], X)
+
+%normalized cell fate markers
+X = normalizedMarkers;
+field = 'normalizedMarkers';
+h5create(writename, ['/',field], size(X))
+h5write(writename, ['/',field], X)
+
+%string type fields
+
+%normalized channels labels
+X = string(normalizedChannels);
+field = 'normalizedChannels';
+
+% h5createwritestr(filename, dataset, str)
+h5createwritestr(writename, ['/',field], X);
+
+X = string(fixedMeta.channelLabel);
+field = 'fixedChannels';
+h5createwritestr(writename, ['/',field], X);
+
+X = string(liveMeta.channelLabel);
+field = 'liveChannels';
+h5createwritestr(writename, ['/',field], X);
+
+X = string(liveMeta.conditions);
+field = 'conditions';
+h5createwritestr(writename, ['/',field], X);
+
+%% canonical correlations
+
+X = Mats.NCratio(:,:,2);
+Y = normalizedMarkers;
+% Y = fm;
+
+[cA,cB,cr,cU,cV] = canoncorr(X',Y);
+m1 = size(cV,2); m2 = size(Y,2);
+
+%save in .mat file
+save(fullfile(dataDir,[savename,'.mat']),'liveMeta','fixedMeta',...
+    'Mats','vr','channels','normalizedChannels','normalizedMarkers','tvec',...
+    'cA','cB','cr','cU','cV')
+
+ccorr = struct('cA',cA,'cB',cB,'cr',cr,'cU',cU,'cV',cV);
+fields = fieldnames(ccorr);
+%save data from canonical correlates struct
+for fi = 1:length(fields)
+    field = fields{fi};
+    X = ccorr.(field);
+    h5create(writename, ['/',field], size(X))
+    h5write(writename, ['/',field], X)
+end
+
+%%
+figure('Position',figurePosition(1440,1440))
+for ii = 1:m1
+    for jj = 1:m2
+        subplot(m1,m2,(ii - 1)*m2 + jj)
+        densityscatter(cV(:,ii),Y(:,jj),0.01,15)
+        xlabel(sprintf('V%d',ii)); ylabel(normalizedChannels{jj})
+        cleanSubplot(14); axis square; colormap turbo
+    end
+end
+
+ratio = normalizedMarkers(:,6) - normalizedMarkers(:,1);
+figure('Position',figurePosition(560,560))
+densityscatter(ratio,V(:,1),0.01,15)
+xlabel('log(ISL1 / NANOG)'); ylabel('V1')
+cleanSubplot(28); axis square; colormap turbo
+axlims(ratio,V(:,1),0);
+
+%%
+figure('Position',figurePosition(2560,round(2*2560/m1)))
+for ii = 1:m1
+    subplot(2,ceil(m1/2),ii)
+    plot(tvec,cA(:,ii),'LineWidth',1)
+    xlabel('time (hrs)')
+    ylabel(sprintf('A%d',ii))
+    cleanSubplot(28); axis square
+end
+
+%%
+ratio = normalizedMarkers(:,6) - normalizedMarkers(:,1);
+thresh = -0.3;
+
+figure('Position',figurePosition(560,560)); hold on
+plot(tvec,mean(X(:,ratio <= thresh),2,'omitnan'),'LineWidth',3)
+plot(tvec,mean(X(:,ratio > thresh),2,'omitnan'),'LineWidth',3)
+plot(tvec,mean(X,2,'omitnan'),'LineWidth',3)
+cleanSubplot(28); axis square
+xlabel('time (hrs)'); ylabel('SMAD4 (N:C)')
+legend('pluripotent','amnion','mean','FontSize',20,'Location','southeast')
+
+%%
+X = Mats.NCratio(:,:,2);
+mu = mean(U(:,1)); sigma = std(U(:,1));
+
+figure('Position',figurePosition(560,560)); hold on
+plot(tvec,mean(X(:,U(:,1) <= mu - sigma),2,'omitnan'),'LineWidth',3)
+plot(tvec,mean(X(:,U(:,1) > mu + sigma),2,'omitnan'),'LineWidth',3)
+plot(tvec,mean(X,2,'omitnan'),'LineWidth',3)
+cleanSubplot(28); axis square
+xlabel('time (hrs)'); ylabel('SMAD4 (N:C)')
+legend('<\mu-\sigma','>\mu+\sigma','mean','FontSize',20,'Location','northeast')
+
+
+%% Visualize cell fate marker data
+% close all
+%choose reference positions to fit gmm to for fate separation
+positionIdx = 1:6; np = length(positionIdx);
+channels = [2,4,3];
+cl = fixedMeta.channelLabel(channels);
+tol = 0.02; fs = 18;
+%combine nuclear marker data into a single matrix:
+M = cell(np,1);
+for ii = 1:np
+%     divs = lt.fixed_position(ii).cellData.divs;
+%     M{ii} = lt.fixed_position(ii).cellData.nucLevel(divs==0,channels);
+    M{ii} = lt.fixed_position(ii).cellData.nucLevel(:,channels);
+end
+M = cell2mat(M);
+
+figure('WindowState','maximized')
+ax = gobjects(2,1);
+%scatterplot
+ax(1) = subplot(1,2,1);
+colorscatter(M(:,1),M(:,2),M(:,3),tol)
+cleanSubplot(fs); axis square; colormap turbo
+xlabel(cl{1}); ylabel(cl{2})
+h = colorbar; set(get(h,'label'),'string',cl{3});
+title('Scatterplot')
+axlims(M(:,1),M(:,2),0.005);
+
+%density scatter plot
+ax(2) = subplot(1,2,2);
+densityscatter(M(:,1),M(:,2),tol)
+cleanSubplot(fs); axis square; colormap turbo
+xlabel(cl{1}); ylabel(cl{2})
+h = colorbar; set(get(h,'label'),'string','density');
+title('Density scatterplot')
+axlims(M(:,1),M(:,2),0.005);
+
+clabel = cell2mat(strcat('_',cl));
+savefigure(fullfile(savedir,['fateMarkerScatterplot',clabel]))
+
+
+%% get data in matrices
+% M = ltC.histories2mats;
+Mats = lt.histories2mats;
+
+field = 'NCratio';
+chan = 2;
+X = Mats.(field)(:,:,chan);
+
+fm = Mats.fateMarkers(channels,:)';
+% fate = cell2mat(cellfun(@(x) [x.fate], ltC.histories, 'UniformOutput', false));
+% label = cell2mat(cellfun(@(x) [x.labels], ltC.histories, 'UniformOutput', false));
+% vr = cell2mat(cellfun(@(x) [x.verified], ltC.histories, 'UniformOutput', false));
+
+fate = cell2mat(cellfun(@(x) [x.fate], lt.histories, 'UniformOutput', false));
+label = cell2mat(cellfun(@(x) [x.labels], lt.histories, 'UniformOutput', false));
+vr = cell2mat(cellfun(@(x) [x.verified], lt.histories, 'UniformOutput', false));
+
+p = M.positionIdx;
+
+x = fm(:,1); x = x - min(x) + 1;
+y = fm(:,2); y = y - min(y) + 1;
+ratio = log10(x./y);
+
+rlabel =...
+        strcat("log(",channelLabels{channels(1)}," / ",channelLabels{channels(2)},")");
+    
+save(fullfile(dataDir,'220923_histories.mat'),'liveMeta','fixedMeta','Mats','label','vr')
+
+%%
+
+figure('Position',figurePosition([560,560])); hold on
+plot(tvec,mean(X(:,ratio>0),2),'LineWidth',3,'Color',[0.8,0,0])
+plot(tvec,mean(X(:,ratio<=0),2),'LineWidth',3,'Color',[0,0.8,0.8])
+cleanSubplot(24);  axis square
+xlabel('time (hours)'); ylabel('SMAD4 (N:C)')
+legend('ExE','pluripotent','FontSize',18)
+
+savefigure(fullfile(savedir,'avgSignalingByFate'))
+
+%% load validated tracking results & use updated positions object
+load(fullfile(dataDir,'corrected_tracking','validatedTracking.mat'))
+fields = {'XY','NCratio','nucLevel','cytLevel','nucArea','nucZ',...
+    'nucMajorAxis','nucMinorAxis'};
+
+newP = load(fullfile(liveDir,'positionsMultiZFG.mat'));
+newP = newP.positions;
+
+ltC = LineageTrace(newP,lt.fixed_position,liveDir,fixedDir);
+
+hists = cell(1,npos);
+for pidx = 1:npos
+%     histories = graphSignalingHistories(P(pidx),P(pidx).G,fields,find(verified{pidx}));
+    ul = UL(pidx,:); ymin = ul(1); xmin = ul(2);
+    %if the position used for tracking had been windowed first, could not
+    %directly use newP like this, it would need to be adjusted in the same
+    %way
+    histories = graphSignalingHistories(newP(pidx),P(pidx).G,fields,1:length(verified{pidx}));
+    start_times = cellfun(@(x) x(1), {histories.Time});
+    hists{pidx} = histories(start_times==1);
+    
+    XYfinal = lt.live_position(pidx).cellData(end).XY;
+    mapped = lt.mapped_idxs{pidx};
+    nchan = size(lt.fixed_position(pidx).cellData.nucLevel,2);
+    
+    %only keep histories mapped to fixed data
+    cellidxs = cellfun(@(x) x(end), {hists{pidx}.CellIdxs});
+    hists{pidx} = hists{pidx}(ismember(cellidxs,mapped));
+    
+    for ii = 1:length(hists{pidx})
+        %mark each cell as verified or not
+        hists{pidx}(ii).verified = verified{pidx}(hists{pidx}(ii).CellIdxs(end));
+        %determine index of final cell in the history
+        xy = hists{pidx}(ii).XY(end,:) + [xmin ymin];
+        d = sum((XYfinal - xy).^2,2);
+        [~,I] = min(d);
+        fixedIdx = find(mapped == I);
+        hists{pidx}(ii).fateMarkers = lt.fixed_position(pidx).cellData.nucLevel(fixedIdx,:);
+        hists{pidx}(ii).fate = lt.fixed_position(pidx).cellData.fate(fixedIdx);
+        hists{pidx}(ii).labels = lt.fixed_position(pidx).cellData.label(fixedIdx);
+    end
+    ltC.histories{pidx} = hists{pidx};
+end
+
+ltC.mapped_idxs = lt.mapped_idxs;
+
+%% get data in matrices
+M = ltC.histories2mats;
+
+field = 'NCratio';
+chan = 2;
+X = M.(field)(:,:,chan);
+
+fm = M.fateMarkers(channels,:)';
+fate = cell2mat(cellfun(@(x) [x.fate], ltC.histories, 'UniformOutput', false));
+label = cell2mat(cellfun(@(x) [x.labels], ltC.histories, 'UniformOutput', false));
+vr = cell2mat(cellfun(@(x) [x.verified], ltC.histories, 'UniformOutput', false));
+
+p = M.positionIdx;
+
+x = fm(:,1); x = x - min(x) + 1;
+y = fm(:,2); y = y - min(y) + 1;
+ratio = log10(x./y);
+
+rlabel =...
+        strcat("log(",channelLabels{channels(1)}," / ",channelLabels{channels(2)},")");
+
+%% kymograph-style plot
+[B,I] = sort(ratio);
+figure
+% imagesc([min(tvec),max(tvec)],[ratio(I(1)),ratio(I(end))],X(:,I)')
+imagesc([min(tvec),max(tvec)],[1,length(ratio)],X(:,I)')
+colormap turbo; cleanSubplot; axis square;
+h = colorbar; set(get(h,'label'),'string','Smad4 N:C ratio');
+xlabel('Time (hours)'); ylabel(rlabel)
+%caxis([0.5,1.1])
+
+yticks = round(linspace(1,length(ratio),5));
+set(gca, 'YTick', yticks, 'YTickLabel', num2str(B(yticks),2));
+
+
+
+%% determine duration, high level, low level
+close all
+nhists = size(X,2);
+Tm = zeros(nhists,1); Us = Tm; Ls = Tm; Ds = Tm;
+tic
+for ii = 1:nhists
+    diff = zeros(size(X,1),1);
+    for jj = 10:length(diff)-9
+        diff(jj) = mean(X(1:jj,ii)) - mean(X(jj+1:end,ii));
+    end
+    
+    diff(diff==0) = -Inf;
+    
+    [~,I] = max(diff);
+    Us(ii) = mean(X(1:I,ii)); Ls(ii) = mean(X(I+1:end,ii));
+    Ds(ii) = diff(I); Tm(ii) = tvec(I);
+    
+    if rand(1) > 0.975
+        plot(tvec,X(:,ii),'LineWidth',1.5)
+        hold on
+        plot(tvec,diff,'LineWidth',1.5)
+
+        plot([tvec(1),tvec(I),tvec(I+1),tvec(end)],[Us(ii), Us(ii), Ls(ii), Ls(ii)],...
+            'LineWidth',1.5,'Color','k')
+        legend('signal','diff')
+        hold off
+        cleanSubplot
+%         title(sprintf('Duration = %g hours, diff = %g',tvec(I),diff(I)))
+        title(sprintf('Duration = %g hours',tvec(I)))
+        xlabel('Time (hours)'); ylabel('Smad4 nuc:cyt ratio')
+        fprintf('%d of %d\n',ii,nhists)
+        xlim([min(tvec),max(tvec)])
+        ylim([0.35,1.2])
+        pause
+    end
+end
+toc
+Tm(Ds <= 0.1 &  Ls >= 0.8) = max(tvec);
+
+signalthreshold = 0.85;
+stats = [Tm Us Ls mean(X,1)' sum(X > signalthreshold,1)'*(tvec(2) - tvec(1))];
+stitles = {'Duration (hours)',' High level','Low level','Integral','Duration over threshold'};
+nstats = size(stats,2);
+
+%% scatterplot of each statistic relative to fate
+figure('Position',[0 500 2560 600])
+for sidx = 1:nstats
+        subplot(1,size(stats,2),sidx)
+        rpos = ratio(vr); spos = stats(vr,sidx);
+%         rpos = ratio; spos = stats(:,sidx);
+        xdata = spos; ydata = rpos;
+        scatter(xdata,ydata,'filled')
+        xlabel(stitles{sidx}); ylabel(rlabel); axis square
+        
+        [f,~] = ksdensity([xdata ydata]); np = round(sqrt(length(f)));
+        F = reshape(f,[np,np]);
+        MIs = MI_joint(F);
+        R = corrcoef([spos rpos]); R = R(2);
+        title({sprintf('R = %g',R),sprintf('MI = %g',MIs)})
+        cleanSubplot; view(2); axlims(xdata,ydata,0); colormap jet
+end
+
+%% classification via thresholding of signaling statistics
+useValidated = false;
+poses = 1:4;
+
+mask = ismember(p,poses) & ismember(label,[1,2]);
+if useValidated && true
+    mask = mask & vr;
+    vlabel = " validated";
+else
+    vlabel = " all histories";
+end
+
+% close all
+figure('Position',[0 685 1500 600])
+ax = gobjects(2,nstats);
+maxes = NaN(nstats,1);
+for sidx = 1:nstats
+    spos = stats(mask,sidx);
+    lpos = label(mask)';
+
+    npts = 100;
+    vals = linspace(min(stats(:,sidx)),max(stats(:,sidx)),npts);
+    infos = NaN(npts,2);
+    accuracies = NaN(npts,2);
+    classAccuracies = NaN(npts,2);
+    for ii = 1:npts
+        ltest = 2*ones(size(lpos));
+        ltest(spos >= vals(ii)) = 1;
+        M = confusionFromLabels(lpos,ltest);
+        [MI,acc] = infoFromConfusion(M);
+        [MIb,accb] = infoFromConfusionBalanced(M);
+
+        infos(ii,:) = [MI, MIb];
+        accuracies(ii,:) = 100*[acc, accb];
+        classAccuracies(ii,1) = 100*M(1,1)/sum(M(1,:));
+        classAccuracies(ii,2) = 100*M(2,2)/sum(M(2,:));
+    end
+    
+    [~,I] = max(infos(:,2));
+    
+    ax(1,sidx) = subplot(2,nstats,sidx);
+    plot(vals,infos(:,1),'LineWidth',3); hold on
+    plot(vals,infos(:,2),'LineWidth',3)
+    xline(vals(I),'--','LineWidth',2); hold off
+    ylabel('MI (bits)'); xlabel(stitles{sidx})
+    xlim(vals([1,end]))
+    cleanSubplot(14); axis square
+    if sidx == nstats
+        legend('raw','class balanced','Location','southeast')
+    end
+    
+    ax(2,sidx) = subplot(2,nstats,sidx + nstats);
+    plot(vals,classAccuracies(:,1),'LineWidth',3); hold on
+    plot(vals,classAccuracies(:,2),'LineWidth',3)
+    xline(vals(I),'--','LineWidth',2); hold off
+    ylabel('accuracy (%)'); xlabel(stitles{sidx})
+    cleanSubplot(14); axis square
+    ylim([0,100])
+    xlim(vals([1,end]))
+    if sidx == nstats
+        legend('amnion','pluripotent','Location','southwest')
+    end
+    
+%     ax(2,sidx) = subplot(2,nstats,sidx + nstats);
+%     plot(vals,accuracies(:,1),'LineWidth',3); hold on
+%     plot(vals,accuracies(:,2),'LineWidth',3)
+%     xline(vals(I),'--','LineWidth',2); hold off
+%     ylabel('accuracy (%)'); xlabel(stitles{sidx})
+%     cleanSubplot; axis square
+%     ylim([0,100])
+    
+end
+linkprop(ax(1,:),'Ylim');
+condstring = cell2mat(strcat(liveMeta.conditions(poses),"; "));
+sgtitle(strcat(condstring, vlabel),...
+    'FontSize',20,'FontWeight','bold')
+
+%% classification based on duration over threshold
+%vary both threshold and duration
+useValidated = true;
+poses = 3;
+
+mask = ismember(p,poses) & label > 0;
+if useValidated && true
+    mask = mask & vr;
+    vlabel = "; validated";
+else
+    vlabel = " ";
+end
+
+lpos = label(mask)';
+
+nts = 50;
+sts = linspace(0.65,1.2,nts);
+npts = 500;
+vals = linspace(0,42,npts);
+
+infos = NaN(npts,nts,2);
+accuracies = NaN(npts,nts,2);
+
+for jj = 1:nts
+    st = sts(jj); %smad threshold
+    test = sum(X > st,1)'*(tvec(2) - tvec(1));
+    spos = test(mask);
+    
+    for ii = 1:npts
+        ltest = 2*ones(size(lpos));
+        ltest(spos >= vals(ii)) = 1;
+        M = confusionFromLabels(lpos,ltest);
+        [MI,acc] = infoFromConfusion(M);
+        [MIb,accb] = infoFromConfusionBalanced(M);
+
+        infos(ii,jj,:) = [MI, MIb];
+        accuracies(ii,jj,:) = 100*[acc, accb];
+    end
+end
+
+%%
+figure
+[xx, yy] = meshgrid(vals, sts);
+surf(xx,yy,infos(:,:,2)','LineStyle','none')
+view(2); xlim(vals([1,end])); ylim(sts([1,end]))
+% imagesc(infos(:,:,2))
+cleanSubplot; colormap turbo
+xlabel('duration'); ylabel('threshold')
+colorbar
+title(strcat("Positions = ", num2str(poses), vlabel))
+
+%% build track trees from weakly connected components of the tracking digraph
+%figure out how to only make these using tracks ending at fully validated
+%cells
+pidx = 1;
+G = ltC.live_position(pidx).G;
+
+close all
+tracks = graphtracks(G, ntime);
+
+% find the largest tree to build as an example
+%find tracks with defined cells in both the first and last time points
+idxs = find(cellfun(@(x) ~isnan(x(1,1)) & any(~isnan(x(end,:))),tracks));
+%find tracks containing validated cells:
+idx2 = find(cellfun(@(x) any(ismember(x(end,:),vinds)),tracks));
+idxs = intersect(idxs,idx2);
+%get the number of cells in the last frame for each of these tracks
+ndaughters  = cellfun(@(x) sum(~isnan(x(end,:))),tracks(idxs));
+%take the maximum of these to get the largest tree
+[~,idx] = max(ndaughters);
+idx = idxs(idx);
+
+opts = struct('field','NCratio','chan',2,'lims',[0.4,1.1],'tvec',tvec);
+
+% plotLineageTree(lt,liveMeta,pidx,idx,opts)
+
+for ii = 1:length(idxs)
+    plotLineageTree(ltC,liveMeta,pidx,idxs(ii),opts)
+    savename = sprintf('lineageTree_p%.4d_track%.4d.png',pidx-1,idxs(ii));
+    savefigure(fullfile(savedir,savename))
+end
+close all
+
+%% look at individual signaling histories
+pidx = 1;
+M = ltC.histories2mats(pidx);
+X = M.NCratio(:,:,2);
+label = [ltC.histories{pidx}.labels];
+colors = {'b','r','b','m'};
+nl = length(label);
+
+figure
+for ii = 1:nl
+    plot(tvec,X(:,ii),'LineWidth',2,'Color',colors{label(ii)+1})
+    cleanSubplot
+    xlim(tvec([1,end])); ylim([0.3,1.6])
+    xlabel('Time (hours)'); ylabel('Smad4:GFP N:C ratio')
+    title(sprintf('Position %d; cell %d of %d',pidx,ii,nl))
+    pause
+end
+
+%%
+
+
+%%
+img = cell(1,1,4);
+
+for ci = 1:4
+    im = max(lt.fixed_position(pidx).loadImage(fixedDir,ci-1,1),[],3);
+    img{ci} = imadjust(im,stitchedlim(im));
+end
+
+mapped = lt.mapped_idxs{pidx};
+xy = lt.fixed_position(pidx).cellData.XY;
+
+close all
+figure
+ax1 = subplot(1,2,1);
+imshow(cell2mat(img(:,:,2:end)))
+ax2 = subplot(1,2,2);
+imshow(img{1})
+hold on
+scatter(xy(mapped<0,1),xy(mapped<0,2),30,'g','filled')
+scatter(xy(mapped>0,1),xy(mapped>0,2),30,'r','filled')
+linkaxes([ax1,ax2])
+
+%% Build signaling histories
+tic
+for pidx = 1:npos
+    makeHistories(lt, pidx);
+    fm = cell2mat({lt.histories{pidx}.fateMarkers}'); %fate marker levels
+    %assign tracked cells to existing k-means clusters
+%     [~,idx_test] = pdist2(C,fm(:,channels),dist,'Smallest',1);
+%     %remove double-negative cells with existing thresholds
+%     idx_test(fm(:,channels(1)) < thresh(1) & fm(:,channels(2)) < thresh(2)) = 0;
+    
+    %temporary fate assignment
+    labels = zeros(size(fm,1),1);
+    labels(fm(:,2) > 2000) = 1;
+    labels(fm(:,2) < 2000 & fm(:,4) > 1500) = 2;
+    for ii = 1:length(lt.histories{pidx})
+        lt.histories{pidx}(ii).labels = labels(ii);%idx_test(ii);
+    end
+end
+toc
+
+save(fullfile(dataDir,'lt.mat'),'lt')
+
+%% collect individual signaling histories
+%individual time traces
+timeres = strsplit(liveMeta.timeInterval,' ');
+timeres = str2double(timeres{1});
+tscale = timeres/60;
+tvec = (0:ntime-1)'*tscale;
+nchannels = lt.fixed_position(1).nChannels;
+
+% figure
+% hold on
+Xall = cell(1,npos); L = cell(1,npos); FM = cell(1,npos); P = cell(1,npos);
+Call = cell(1,npos); Xrawall = cell(1,npos); Aall = cell(1,npos);
+nucLevel = cell(1,npos); cytLevel = cell(1,npos); Nall = cell(1,npos);
+for pidx = 1:npos
+    start_times = cellfun(@(x) x(1), {lt.histories{pidx}.Time});
+    hists = lt.histories{pidx}(start_times==1);
+    X = NaN(ntime,length(hists)); N = X; Xraw = X; A = X; NL = X; CL = X;
+    labels = zeros(1,length(hists)); p = pidx*ones(size(labels));
+    fm = zeros(nchannels,length(hists));
+    for ii = 1:length(hists)
+        X(:,ii) = cleanHistory(hists,ii,1); labels(ii) = hists(ii).labels;
+        fm(:,ii) = hists(ii).fateMarkers';
+        NL(:,ii) = cleanHistory(hists,ii,1,'nucLevel');
+        CL(:,ii) = cleanHistory(hists,ii,1,'cytLevel');
+        Xraw(hists(ii).Time,ii) = hists(ii).NCratio(:,2);
+        A(:,ii) = cleanHistory(hists,ii,0,'nucArea');
+        N(:,ii) = cleanHistory(hists,ii,0,'nucLevel');
+%         if rand(1) > 0.9
+%             plot(tvec,X(:,ii),'Color',colors(labels(ii)+1,:))
+%         end
+    end
+    Xall{pidx} = X; L{pidx} = labels; FM{pidx} = fm; P{pidx} = p;
+    nucLevel{pidx} = NL; cytLevel{pidx} = CL; Aall{pidx} = A;
+    Xrawall{pidx} = Xraw; Nall{pidx} = N;
+end
+labels = cell2mat(L); fm = cell2mat(FM); p = cell2mat(P);
+X = cell2mat(Xall); Xraw = cell2mat(Xrawall); nucLevel = cell2mat(nucLevel);
+cytLevel = cell2mat(cytLevel); A = cell2mat(Aall); N = cell2mat(Nall);
+% cleanSubplot
+% xlabel('Time (hours)')
+% ylabel('Smad4 N:C ratio')
+% xlim([min(tvec),max(tvec)])
+
+%%
+
+colors = [0 0 0; 1 0 0; 0 1 0];
+
+close all
+figure
+for ii = 1:100
+    idx = randperm(size(X,2),1);
+    plot(tvec,log10(nucLevel(:,idx)),'LineWidth',2,'Color',colors(labels(idx)+1,:))
+%     plot(tvec,Xraw(:,idx),'LineWidth',2,'Color',colors(labels(idx)+1,:))
+    xlabel('Time (hours)')
+    ylabel('Smad1RFP N:C ratio')
+    xlim([min(tvec),max(tvec)])
+%     ylim([0,10])
+    ylim([2.8,3.25])
+    cleanSubplot
+    pause
+end
+
+%% compare expression between conditions
+chan = [3,4];
+% close all
+figure; hold on
+for pidx = 1:npos
+    scatter(fm(chan(1),p==pidx),fm(chan(2),p==pidx),15,'filled')
+end
+hold off; cleanSubplot; axlims(fm(chan(1),:),fm(chan(2),:),0);
+xlabel(channelLabels{chan(1)}); ylabel(channelLabels{chan(2)})
+legend(liveMeta.conditions)
+
+%% compare average signaling between conditions
+close all; figure; hold on
+for pidx = 1:npos
+    plot(tvec,median(X(:,p==pidx),2),'LineWidth',2)
+end
+hold off; cleanSubplot; axis square; xlim([min(tvec),max(tvec)])
+xlabel('Time (hours)'); ylabel('Smad4 N:C ratio')
+legend(fixedMeta.conditions)
+
+%% plot traces colored for ISL1 expression (or NANOG or SOX2 or ratio)
+iis = find(p==1);
+for ii = 1:length(iis)
+    
+end
+
+%% compare average ISL1 between conditions
+close all; figure; hold on
+for pidx = 1:npos
+    [f,xi] = ksdensity(log(fm(2,p==pidx)));
+    plot(xi,f,'LineWidth',2)
+end
+xlabel('log(ISL1)'); ylabel('density')
+cleanSubplot
+legend(fixedMeta.conditions)
+set(gcf,'Position',[409 456 1071 843])
+
+%% PC1 between conditions
+
+
+%%
+close all
+scatter(fm(2,ratio>0),fm(3,ratio>0),50,'filled')
+hold on
+scatter(fm(2,ratio<=0),fm(3,ratio<=0),50,'filled')
+cleanSubplot(32)
+axlims(fm(2,:),fm(3,:));
+
+legend('ISL1+/SOX2-','ISL1-/SOX2+')
+xlabel('ISL1'); ylabel('SOX2');
+
+%% correlation + MI for average signaling hour-by-hour
+close all
+x = fm(2,:); x = x - min(x) + 1;
+y = fm(4,:); y = y - min(y) + 1;
+% ratio = log(fm(2,:)./fm(3,:));
+ratio = log(x./y);
+ts = 0:1:round(max(tvec))-1;
+Rs = zeros(size(ts)); MIs = Rs;
+% figure
+for ii = 1:length(ts)-1
+    idxs = tvec > ts(ii) & tvec < ts(ii + 1);
+    test = mean(X(idxs,:),1);
+    R = corrcoef([test' ratio']);
+    Rs(ii) = R(2);
+    [f,~] = ksdensity([test' ratio']); np = round(sqrt(length(f)));
+    F = reshape(f,[np,np]);
+    MIs(ii) = MI_joint(F);
+end
+
+figure('WindowState','maximized')
+subplot(1,3,1)
+plot(ts,Rs,'LineWidth',2)
+xlim([min(ts),max(ts)])
+cleanSubplot; axis square
+xlabel('Time')
+title('Correlation between signaling and log(ISL1 / SOX2)')
+ylabel('Correlation')
+
+subplot(1,3,2)
+plot(ts,MIs,'LineWidth',2)
+xlim([min(ts),max(ts)])
+cleanSubplot; axis square
+xlabel('Time')
+ylabel('MI estimate')
+title('MI between signaling and log(ISL1 / SOX2)')
+
+subplot(1,3,3)
+[Rm,I] = max(abs(Rs)); I = I - 1;
+idxs = tvec > ts(I) & tvec < ts(I + 1);
+test = mean(X(idxs,:),1);
+ksdensity([test' ratio'])
+view(2); axlims(test,ratio); axis square; colormap jet
+cleanSubplot
+xlabel('Average signaling level')
+ylabel('log(ISL1 / SOX2)')
+title(sprintf('t = %g hours, R = %g, MI = %g',ts(I+1),Rm,MIs(I)))
+
+%%
+
+close all
+figure%('WindowState','maximized')
+plot(tvec,mean(X(:,ratio>0),2),'LineWidth',2)
+hold on
+plot(tvec,mean(X(:,ratio<=0),2),'LineWidth',2)
+hold off
+cleanSubplot; axis square
+xlim([min(tvec),max(tvec)])
+ylabel('Smad4 nuc:cyt ratio'); xlabel('Time (hours)')
+legend('ISL1+/SOX2-','ISL1-/SOX2+')
+
+
+%% correlation + MI for mean (integrated) signaling
+test = mean(X,1);
+R = corrcoef([test' ratio']); R = R(2);
+[f,~] = ksdensity([test' ratio']); np = round(sqrt(length(f)));
+F = reshape(f,[np,np]);
+MIs = MI_joint(F);
+
+figure
+ksdensity([test' ratio'])
+view(2); axlims(test,ratio); axis square; colormap jet
+cleanSubplot
+xlabel('Mean (integrated) signaling level')
+ylabel('log(ISL1 / SOX2)')
+title(sprintf('R = %g, MI = %g',R,MIs))
+
+%% new way of determining duration
+close all
+nhists = size(X,2);
+Tm = zeros(nhists,1); Us = Tm; Ls = Tm; Ds = Tm;
+tic
+for ii = 1:nhists
+    diff = zeros(size(X,1),1);
+    for jj = 10:length(diff)-9
+        diff(jj) = mean(X(1:jj,ii)) - mean(X(jj+1:end,ii));
+    end
+    
+    diff(diff==0) = -Inf;
+    
+    [~,I] = max(diff);
+    Us(ii) = mean(X(1:I,ii)); Ls(ii) = mean(X(I+1:end,ii));
+    Ds(ii) = diff(I); Tm(ii) = tvec(I);
+    
+    if rand(1) > 0.975
+        plot(tvec,X(:,ii),'LineWidth',1.5)
+        hold on
+        plot(tvec,diff,'LineWidth',1.5)
+
+        plot([tvec(1),tvec(I),tvec(I+1),tvec(end)],[Us(ii), Us(ii), Ls(ii), Ls(ii)],...
+            'LineWidth',1.5,'Color','k')
+        legend('signal','diff')
+        hold off
+        cleanSubplot
+%         title(sprintf('Duration = %g hours, diff = %g',tvec(I),diff(I)))
+        title(sprintf('Duration = %g hours',tvec(I)))
+        xlabel('Time (hours)'); ylabel('Smad4 nuc:cyt ratio')
+        disp(num2str(ii))
+        xlim([min(tvec),max(tvec)])
+        pause
+    end
+end
+toc
+Tm(Ds <= 0.1 &  Ls >= 0.8) = max(tvec);
+
+%% compare level, duration, integral for predicting gene expression
+stats = [Tm Us Ls mean(X,1)'];
+stitles = {'Duration (hours)',' High level','Low level','Integral'};
+
+
+np = round(sqrt(1600));
+
+figure('WindowState','maximized')
+for ii = 1:4
+    subplot(1,4,ii)
+    xdata = stats(:,ii); ydata = ratio';
+    ksdensity([xdata ydata])
+%     scatter(xdata,ydata,30,'filled')
+    xlabel(stitles{ii}); ylabel('log(ISL1 / SOX2)'); axis square
+    
+%     [xl, yl] = axlims(xdata,ydata,0);
+%     xp = linspace(xl(1),xl(2),np);
+%     yp = linspace(yl(1),yl(2),np);
+%     [Xp,Yp] = meshgrid(xp,yp);
+%     [f,~] = ksdensity([xdata ydata],[Xp(:) Yp(:)]);
+    [f,~] = ksdensity([xdata ydata]); np = round(sqrt(length(f)));
+    F = reshape(f,[np,np]);
+    MIs = MI_joint(F);
+    R = corrcoef([stats(:,ii) ratio']); R = R(2);
+    title(sprintf('R = %g, MI = %g',R,MIs))
+    cleanSubplot; view(2); axlims(xdata,ydata,0); colormap jet
+end
+
+%% bayesian binary classification***
+rthresh = 0; %log ratio threshold
+np = round(sqrt(4000));
+sidx = 1;
+xdata = stats(:,sidx);
+% xdata = mean(X > 0.85,1)';
+ydata = ratio';
+
+[xl, yl] = axlims(xdata,ydata,0.01);
+xp = linspace(xl(1),xl(2),np);
+yp = linspace(yl(1),yl(2),np);
+[Xp,Yp] = meshgrid(xp,yp);
+
+close all
+figure('WindowState','maximized')
+subplot(1,2,1)
+[f,xi] = ksdensity([xdata ydata],[Xp(:) Yp(:)]);
+Xi = reshape(xi(:,1),[np,np]); Yi = reshape(xi(:,2),[np,np]); F = reshape(f,[np,np]);
+surf(Xi,Yi,F)
+cleanSubplot; axlims(xp,yp,0); view(2); colormap jet
+test = xline(0,'LineWidth',2.5);
+
+xlabel(stitles{sidx}); ylabel('log(ISL1 / SOX2)')
+
+subplot(1,2,2)
+yi = Yi(:,1);
+xi = Xi(1,:);
+marg = sum(F,2); marg = marg/sum(marg);
+P1 = sum(marg(yi>rthresh)); P2 = sum(marg(yi<=rthresh));
+psox2 = NaN(size(xi)); pisl1 = NaN(size(xi));
+for ii = 1:size(Xi,2)
+    test.Value = xi(ii);
+    prob = F(:,ii)/sum(F(:,ii));
+    plot(yi,prob,'LineWidth',1.5)
+    xline(rthresh);
+    xlabel('log(ISL1 / SOX2)')
+    p1 = sum(prob(yi>rthresh)); p2 = sum(prob(yi<=rthresh));
+    p1 = p1/P1; p2 = p2/P2;
+    psox2(ii) = p2/(p1+p2); pisl1(ii) = p1/(p1+p2);
+    title(strcat(stitles{sidx},sprintf(' = %g; P(SOX2+) = %g',xi(ii),psox2(ii))))
+    cleanSubplot;
+    pause(0.05)
+end
+
+[~,I] = min(abs(0.5 - psox2));
+dthresh = xi(I);
+
+g = figure;
+plot(xi,psox2,'LineWidth',1.5)
+xlabel(stitles{sidx})
+ylabel('P(SOX2+)')
+cleanSubplot(24)
+axis square
+title('Conditional probability-based classification')
+yline(0.5,'--','LineWidth',1); xline(dthresh,'--','LineWidth',1);
+ylim([0,1])
+xlim([min(xi),max(xi)])
+g.Position = [700 -225 1024 1024];
+
+%classify based on level/duration
+C = zeros(2,2);
+RL = ones(size(ratio)); RL(ratio > rthresh) = 2;
+DL = ones(size(ratio)); DL(xdata > dthresh) = 2;
+for ii = 1:2
+    for jj = 1:2
+        C(ii,jj) = sum(RL == ii & DL == jj);
+    end
+end
+
+figure
+subplot(1,2,1)
+scatter(fm(2,ratio>0),fm(3,ratio>0),30,'filled')
+hold on
+scatter(fm(2,ratio<=0),fm(3,ratio<=0),30,'filled')
+cleanSubplot; axlims(fm(2,:),fm(3,:)); axis square
+legend('ISL1+/SOX2-','ISL1-/SOX2+')
+xlabel('ISL1'); ylabel('SOX2'); hold off
+title('Based on gene expression')
+
+subplot(1,2,2)
+scatter(fm(2,stats(:,sidx)>dthresh),fm(3,stats(:,sidx)>dthresh),30,'filled')
+hold on
+scatter(fm(2,stats(:,sidx)<=dthresh),fm(3,stats(:,sidx)<=dthresh),30,'filled')
+cleanSubplot; axlims(fm(2,:),fm(3,:)); axis square
+xlabel('ISL1'); ylabel('SOX2'); hold off
+title(strcat("Based on ", stitles{sidx}))
+
+fprintf('\n')
+disp(strcat("Based on ", stitles{sidx},":"))
+fprintf('Threshold = %g\n',dthresh)
+fprintf('MI bound = %g bits\n',MI_joint(C))
+fprintf('Classification accuracy = %g%%\n',100*sum(diag(C))/sum(C,'all'))
+
+%%
+% figure
+% subplot(1,2,1)
+% scatter(fm(2,ratio>0),fm(3,ratio>0),30,'filled')
+% hold on
+% scatter(fm(2,ratio<=0),fm(3,ratio<=0),30,'filled')
+% cleanSubplot; axlims(fm(2,:),fm(3,:)); axis square
+% legend('ISL1+/SOX2-','ISL1-/SOX2+')
+% xlabel('ISL1'); ylabel('SOX2'); hold off
+% title('Based on gene expression')
+% 
+% subplot(1,2,2)
+% scatter(fm(2,yfit==1),fm(3,yfit==1),30,'filled')
+% hold on
+% scatter(fm(2,yfit==2),fm(3,yfit==2),30,'filled')
+% cleanSubplot; axlims(fm(2,:),fm(3,:)); axis square
+% xlabel('ISL1'); ylabel('SOX2'); hold off
+% title(strcat("Based on ", "quadratic SVM"))
+
+%% duration over different levels
+rthresh = 0; %log ratio threshold
+np = round(sqrt(4000));
+ydata = ratio';
+
+levels = linspace(0.65,1,25);
+MIs = zeros(size(levels)); accs = zeros(size(levels));
+
+tic
+for jj = 1:length(levels)
+    xdata = mean(X > levels(jj),1)';
+    [xl, yl] = axlims(xdata,ydata,tol);
+    xp = linspace(xl(1),xl(2),np);
+    yp = linspace(yl(1),yl(2),np);
+    [Xp,Yp] = meshgrid(xp,yp);
+    [f,xi] = ksdensity([xdata ydata],[Xp(:) Yp(:)]);
+    Xi = reshape(xi(:,1),[np,np]); Yi = reshape(xi(:,2),[np,np]); F = reshape(f,[np,np]);
+    
+    yi = Yi(:,1);
+    xi = Xi(1,:);
+    marg = sum(F,2); marg = marg/sum(marg);
+    P1 = sum(marg(yi>rthresh)); P2 = sum(marg(yi<=rthresh));
+    psox2 = NaN(size(xi)); pisl1 = NaN(size(xi));
+    for ii = 1:size(Xi,2)
+        test.Value = xi(ii);
+        prob = F(:,ii)/sum(F(:,ii));
+        plot(yi,prob,'LineWidth',1.5)
+        xline(rthresh);
+        xlabel('log(ISL1 / SOX2)')
+        p1 = sum(prob(yi>rthresh)); p2 = sum(prob(yi<=rthresh));
+        p1 = p1/P1; p2 = p2/P2;
+        psox2(ii) = p2/(p1+p2); pisl1(ii) = p1/(p1+p2);
+    end
+
+    [~,I] = min(abs(0.5 - psox2));
+    dthresh = xi(I);
+
+    %classify based on level/duration
+    C = zeros(2,2);
+    RL = ones(size(ratio)); RL(ratio > rthresh) = 2;
+    DL = ones(size(ratio)); DL(xdata > dthresh) = 2;
+    for ii = 1:2
+        for ll = 1:2
+            C(ii,ll) = sum(RL == ii & DL == ll);
+        end
+    end
+    
+    MIs(jj) = MI_joint(C); accs(jj) = 100*sum(diag(C))/sum(C,'all');
+    fprintf('\nLevel = %g\n',levels(jj))
+    fprintf('Threshold = %g\n',dthresh)
+    fprintf('MI bound = %g bits\n',MIs(jj))
+    fprintf('Classification accuracy = %g%%\n',accs(jj))
+end
+toc
+
+figure
+subplot(1,2,1)
+plot(levels,accs,'LineWidth',2)
+cleanSubplot; axis square
+xlabel('Smad4 N:C ratio threshold'); ylabel('Classification accuracy')
+xlim([min(levels),max(levels)])
+
+subplot(1,2,2)
+plot(levels,MIs,'LineWidth',2)
+cleanSubplot; axis square
+xlabel('Smad4 N:C ratio threshold'); ylabel('Mutual information bound')
+xlim([min(levels),max(levels)])
+
+%% principal component analysis
+close all
+[C, S, L] = pca(X');
+
+figure
+hold on
+for ii = 1:3
+    plot(tvec,C(:,ii),'LineWidth',2)
+end
+yline(0,'LineWidth',1.5);
+hold off; cleanSubplot; axis square;
+xlabel('Time (hours)'); ylabel('Principal components')
+xlim([min(tvec),max(tvec)])
+legend(cellstr(strcat('PC',num2str((1:3)'))))
+
+figure('WindowState','maximized')
+for ii = 1:3
+    subplot(1,3,ii)
+    xdata = S(:,ii); ydata = ratio';
+    ksdensity([xdata ydata])
+    xlabel(sprintf('PC%d',ii)); ylabel('log(ISL1 / SOX2)'); axis square
+    
+    [f,~] = ksdensity([xdata ydata]); np = round(sqrt(length(f)));
+    F = reshape(f,[np,np]);
+    MIs = MI_joint(F);
+    R = corrcoef([stats(:,ii) ratio']); R = R(2);
+    title(sprintf('R = %g, MI = %g',R,MIs))
+    cleanSubplot; view(2); axlims(xdata,ydata,0); colormap jet
+end
+
+figure('WindowState','maximized')
+for ii = 1:4
+    subplot(1,4,ii)
+    ksdensity([stats(:,ii),S(:,1)])
+    cleanSubplot; axis square
+    view(2); colormap jet; axlims(stats(:,ii),S(:,1),0);
+    R = corrcoef([stats(:,ii) S(:,1)]); R = R(2);
+    MI = MI_kde(stats(:,ii),S(:,1));
+    xlabel(stitles{ii}); ylabel(sprintf('PC%d',1))
+    title(sprintf('R = %g, MI = %g',R,MI))
+end
+
+%separate signaling histories along PC axes
+figure('WindowState','maximized')
+for ii = 1:3
+    s = sort(S(:,ii));
+    low = s(round(length(s)/3));
+    high = s(round(2*length(s)/3));
+    subplot(1,3,ii)
+    hold on
+    plot(tvec,mean(X(:,S(:,ii)<low),2),'LineWidth',2)
+    plot(tvec,mean(X(:,S(:,ii)>low & S(:,ii)<high),2),'LineWidth',2)
+    plot(tvec,mean(X(:,S(:,ii)>high),2),'LineWidth',2)
+    legend('Bottom 1/3','Middle 1/3','Top 1/3')
+    cleanSubplot; axis square; xlim([min(tvec),max(tvec)]); ylim([0.4,1.6])
+    xlabel('Time (hours)'); ylabel('Smad4 N:C ratio')
+    title(sprintf('Separated along PC%d',ii))
+end
+
+%% save signaling histories, fates, labels in h5 format
+writename = fullfile(dataDir,'210827_histories.h5');
+%clean signaling histories
+h5create(writename,'/cleanHistories',size(X))
+h5write(writename, '/cleanHistories', X)
+%raw signaling histories
+Xraw = zeros(size(X));
+for ii = 1:length(hists)
+    Xraw(hists(ii).Time,ii) = hists(ii).NCratio(:,2);
+end
+h5create(writename,'/rawHistories',size(Xraw))
+h5write(writename, '/rawHistories', Xraw)
+%labels
+h5create(writename,'/labels',[1,length(hists)])
+h5write(writename, '/labels', cell2mat({hists.labels}))
+%gene expression
+fates = cell2mat({hists.fateMarkers}');
+h5create(writename,'/fixedNucLevels',size(fm))
+h5write(writename, '/fixedNucLevels', fm)
+
+
+%% plot signaling histories colored by assigned cell fate
+close all
+figure('WindowState','maximized')
+%scatterplot of fate marker expression
+subplot(1,2,1)
+hold on
+for ki = 0:k
+    scatter(fm(idx_test==ki,channels(1)),fm(idx_test==ki,channels(2)),15,...
+        colors(ki+1,:),'filled')
+end
+xlabel(channelLabels{channels(1)})
+ylabel(channelLabels{channels(2)})
+axis square
+cleanSubplot
+
+%average signaling history per fate
+subplot(1,2,2)
+hold on
+for ki = 1:k
+    ncr = mean(X(:,labels==ki),2,'omitnan');
+    plot((1:ntime)*tscale,ncr,'Color',colors(ki+1,:),'LineWidth',2)
+end
+cleanSubplot
+axis square
+xlabel('Time (hours)')
+ylabel('Smad4 N:C ratio')
+% xlim([0,ntime*tscale])
+xlim([0,42])
+
+%% look at individual time traces
+figure
+tfirst = cellfun(@(x) x(1), {histories.Time});
+allidxs = find(tfirst == 1 & ismember(labels,[1,2]));
+idxs = randperm(length(allidxs),100);
+idxs = allidxs(idxs);
+for ii = 1:length(idxs)
+    plot((1:ntime)*tscale,X(:,idxs(ii)),'Color',colors(labels(idxs(ii))+1,:))
+    xlim([0,ntime*tscale])
+    ylim([0.4,1.6])
+    cleanSubplot
+    xlabel('Time (hours)')
+    ylabel('Smad4 N:C ratio')
+    pause
+end
+
+%% local function
+%@author Pavel Komarov pavel@gatech.edu 941-545-7573
+function h5createwritestr(filename, dataset, str)
+
+    %"The class of input data must be cellstring instead of char when the
+    %HDF5 class is VARIABLE LENGTH H5T_STRING.", but also I don't want to
+    %force the user to put braces around single strings, so this.
+    if ischar(str)
+        str = {str};
+    end
+
+    %check whether the specified .h5 exists and either create or open
+    %accordingly
+    if ~exist(filename, 'file')
+        file = H5F.create(filename, 'H5F_ACC_TRUNC', 'H5P_DEFAULT', 'H5P_DEFAULT');
+    else
+        file = H5F.open(filename, 'H5F_ACC_RDWR', 'H5P_DEFAULT');
+    end
+
+    %set variable length string type
+    vlstr_type = H5T.copy('H5T_C_S1');
+    H5T.set_size(vlstr_type,'H5T_VARIABLE');
+
+    % There is no way to check whether a dataset exists, so just try to
+    % open it, and if that fails, create it.
+    try
+        dset = H5D.open(file, dataset);
+        H5D.set_extent(dset, fliplr(size(str)));
+    catch
+        %create the intermediate groups one at a time because evidently the
+        %API's functions aren't smart enough to be able to do this themselves.
+        slashes = strfind(dataset, '/');
+        for i = 2:length(slashes)
+            url = dataset(1:(slashes(i)-1));%pull out the url of the next level
+            try
+                H5G.create(file, url, 1024);%1024 "specifies the number of
+            catch   %bytes to reserve for the names that will appear in the group"
+            end
+        end
+
+        %create a dataspace for cellstr
+        H5S_UNLIMITED = H5ML.get_constant_value('H5S_UNLIMITED');
+%         spacerank = max(1, sum(size(str) > 1));
+        spacerank = length(size(str));
+        dspace = H5S.create_simple(spacerank, fliplr(size(str)), ones(1, spacerank)*H5S_UNLIMITED);
+
+        %create a dataset plist for chunking. (A dataset can't be unlimited
+        %unless the chunk size is defined.)
+        plist = H5P.create('H5P_DATASET_CREATE');
+        chunksize = ones(1, spacerank);
+        chunksize(1) = 2;
+        H5P.set_chunk(plist, chunksize);% 2 strings per chunk
+        dset = H5D.create(file, dataset, vlstr_type, dspace, plist);
+
+        %close things
+        H5P.close(plist);
+        H5S.close(dspace);
+    end
+
+    %write data
+    H5D.write(dset, vlstr_type, 'H5S_ALL', 'H5S_ALL', 'H5P_DEFAULT', str);
+
+    %close file & resources
+    H5T.close(vlstr_type);
+    H5D.close(dset);
+    H5F.close(file);
+end
+
+
+
+
