@@ -1,7 +1,8 @@
 # BMPintegral
 code associated with the preprint "The time integral of BMP signaling determines fate in a stem cell model for early1
-human development" at https://doi.org/10.1101/2023.04.10.536068 
-Most analyses and figures were produced with MATLAB version 2019b or newer
+human development" at https://doi.org/10.1101/2023.04.10.536068.
+
+Most analyses and figures were produced using MATLAB version 2019b or newer
 
 Code for preprocessing, segmenting, and quantifying live and fixed-cell image data as described in the manuscript is in the folder "image_analysis"
 Code for linking live to fixed-cell data and consolidating into a single data structure is in the subfolder "live_fixed_analysis"
