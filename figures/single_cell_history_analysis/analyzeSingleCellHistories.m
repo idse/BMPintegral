@@ -1,8 +1,6 @@
 clear; close all; clc
 
-
 %% setup
-
 %graphical options
 fs = 26; %font size
 wh = [560 560]; figpos = figurePosition(wh); %figure width and height -> figure position
@@ -526,7 +524,6 @@ datasetindices = 1:ndsets;
 for filtertype = 1:nftypes%[1 4]%[1 4]%1:4%[1 2 3 4 5]%1:3%:3
 
     stats = cell(1,ndsets);
-    maxaccs = {}; % for classification via thresholding of signaling stats
     useValidated = false; %don't have validated histories included for now
 
     for di = datasetindices
@@ -687,7 +684,7 @@ for filtertype = 1:nftypes%[1 4]%[1 4]%1:4%[1 2 3 4 5]%1:3%:3
         vlabel = " all histories";
         
         maxMIs = NaN(nstats,2);
-        maxaccs{di} = NaN(nstats,2);
+        maxaccs{filtertype,di} = NaN(nstats,2);
 
         for sidx = 1:nstats % iterate over different stats
             spos = stats{di}(mask,sidx);
@@ -720,7 +717,7 @@ for filtertype = 1:nftypes%[1 4]%[1 4]%1:4%[1 2 3 4 5]%1:3%:3
             disp(stitles{sidx})
             disp('confusion:');
             confM{filtertype, sidx} = confM{filtertype, sidx}(:,:,I);
-            confM{filtertype, sidx};
+%             confM{filtertype, sidx};
             fprintf('max accuracy = %.2g\n',accmax)
             fprintf('class balanced = %.2g\n',accbmax)
             maxaccs{di}(sidx,:) = [accbmax,vals(I2)];
@@ -768,8 +765,6 @@ for filtertype = 1:nftypes%[1 4]%[1 4]%1:4%[1 2 3 4 5]%1:3%:3
         close;
     end
 end
-
-fs = 26;
 
 %% classification via thresholding of signaling statistics
 
@@ -843,8 +838,6 @@ for filtertype = 1
     disp(maxaccs{filtertype,di})
 end
 
-
-%%
 conditional = true;
 separatedists = true;
 nstats = 4;
@@ -878,11 +871,11 @@ for sidx = 1:nstats
     t = maxaccs{di}(sidx,2); % feature threshold
     ft = 0;% fate threshold
 
-    truepos = sum(sum(F.*(xx>maxaccs{filtertype,di}(sidx,2)).*(yy>ft)));
-    falsepos = sum(sum(F.*(xx>maxaccs{filtertype,di}(sidx,2)).*(yy<ft)));
-    trueneg = sum(sum(F.*(xx<maxaccs{filtertype,di}(sidx,2)).*(yy<ft)));
-    falseneg = sum(sum(F.*(xx<maxaccs{filtertype,di}(sidx,2)).*(yy>ft)));
-    M = [falseneg, truepos; trueneg, falsepos];
+%     truepos = sum(sum(F.*(xx>maxaccs{filtertype,di}(sidx,2)).*(yy>ft)));
+%     falsepos = sum(sum(F.*(xx>maxaccs{filtertype,di}(sidx,2)).*(yy<ft)));
+%     trueneg = sum(sum(F.*(xx<maxaccs{filtertype,di}(sidx,2)).*(yy<ft)));
+%     falseneg = sum(sum(F.*(xx<maxaccs{filtertype,di}(sidx,2)).*(yy>ft)));
+%     M = [falseneg, truepos; trueneg, falsepos];
 
     disp('----------')
     truepos = sum(sum(F2.*(xx>maxaccs{filtertype,di}(sidx,2)).*(yy>ft)));
@@ -891,10 +884,10 @@ for sidx = 1:nstats
     falseneg = sum(sum(F2.*(xx<maxaccs{filtertype,di}(sidx,2)).*(yy>ft)));
     M2 = [falseneg, truepos; trueneg, falsepos];
     
-    if conditional
+    if conditional && true
         disttype = 'conditional';
         F = F2;
-        M = M2;
+%         M = M2;
     else
         disttype = 'joint';
     end

@@ -64,6 +64,8 @@ for di = 1:ndirs
     rl = axlims(ratio,ratio,tol,false);
     % use k means to separate into ISL1+/-(equivalent to gmm/otsu thresholding in 1D)
     Idx = kmeans(ratio,2);
+    %threshold is the mean of the highest value in the lower cluster and the
+    %lowest value in the higher cluster
     t1 = min([max(ratio(Idx == 1)),max(ratio(Idx == 2))]);
     t2 = max([min(ratio(Idx == 1)),min(ratio(Idx == 2))]);
     thresh = 0.5*(t1 + t2);
@@ -72,10 +74,10 @@ for di = 1:ndirs
     pts = linspace(rl(1),rl(2),100);
     [f,xi] = ksdensity(ratio);
     [~,locs,~,p] = findpeaks(f,xi); %get location and prominence of peaks
-    %get the two peaks with greatest prominence (p)
+    %take the two peaks with greatest prominence (p):
     [~,I] = sort(p,'descend'); %order the peaks by prominence
     rpeaks = locs(I(1:2)); %get the two most prominent peaks 
-    bw = 0.5*abs(rpeaks(1) - rpeaks(2));
+    bw = 0.5*abs(rpeaks(1) - rpeaks(2)); %bandwidth is half the distance between peaks
     bws(di) = bw;
     rs = cell(size(ms{di}));
     ps = NaN(size(ms{di}));

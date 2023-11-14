@@ -1,42 +1,38 @@
 clear; close all; clc
 
-%% Load data, setup
+%% load data, setup
 scriptPath = fileparts(matlab.desktop.editor.getActiveFilename);
 dataDir = scriptPath;
-savedir = fullfile(dataDir,'clustering_analysis_updated');
+savedir = fullfile(dataDir,'figures');
 if ~exist(savedir,'dir'), mkdir(savedir); end
 
-baseDir = 'Z:\Heemskerk_Lab\Seth-06\220712_Smad4GFP_BMP_IWP2_MP_live';
-liveDir = fullfile(baseDir,'');
-fixedDir = fullfile(baseDir,'fixed_round1');
+baseDir = fullfile(dataDir,'processed_data');
+liveDir = fullfile(baseDir,'live');
+fixedDir = fullfile(baseDir,'fixed');
 
+%load metadata
 liveMeta = load(fullfile(liveDir,'meta.mat'));
 liveMeta = liveMeta.meta;
 
 fixedMeta = load(fullfile(fixedDir,'combined_meta.mat'));
-% fixedMeta = load(fullfile(fixedDir,'meta.mat'));
 fixedMeta = fixedMeta.meta;
 channelLabels = fixedMeta.channelLabel;
 
-%load lineage trace
-load(fullfile(dataDir,'lt_correctedcyto.mat'))
+%load combined live and fixed cell quantification
+load(fullfile(baseDir,'lt.mat'))
 npos = length(lt.live_position);
 
-%get image size
-A = lt.fixed_position(1).loadImage(fixedDir,0,1);
-imsize = size(A); imsize = imsize(1:2);
-clear A
-%number of time points in live imaging
+%number of time points from live imaging
 ntime = lt.live_position(1).nTime;
 nucChannel = 0;
-
+%vector of time points based on time interval from live imaging
 treatmentTime = 3;
 s = strsplit(liveMeta.timeInterval,'min');
 tvec = ((1:ntime) - treatmentTime)*str2double(s{1})/60;
 
-ppc = liveMeta.posPerCondition;
-ncond = fixedMeta.nWells;
-Rmax = lt.fixed_position(1).radiusMicron;
+ppc = liveMeta.posPerCondition; %positions per condition
+ncond = fixedMeta.nWells; %number of conditions
+Rmax = lt.fixed_position(1).radiusMicron; %colony radius in microns
 
 %labels for conditions for saving figures:
 condlabels = strrep(liveMeta.conditions,',','_');
@@ -50,26 +46,19 @@ figpos = figurePosition(560, 560); %figure position
 reps = 100;
 
 %% get fixed data in radial bins for each colony in each condition
-%use the same number of bins for live and fixed data
+%use the same number of radial bins for live and fixed data
 nbin = 30;
 
-channeltype = 'fatemarker';
-% channeltype = 'signal';
-
-if strcmp(channeltype,'fatemarker')
-    fixedchan = [2,4,7,8];
-    fixedfield = {'nucLevel','nucLevel','nucLevel','nucLevel'};
-elseif strcmp(channeltype,'signal')
-    fixedchan = [3,6];
-    fixedfield = {'nucLevel','NCratio'};
-end
+%get channels with stains for cell fate markers
+fixedchan = [2,4,7,8];
+fixedfield = {'nucLevel','nucLevel','nucLevel','nucLevel'};
+cls = fixedMeta.channelLabel(fixedchan); %channel labels
 
 fixedopts = struct('fields',{fixedfield},'normalizeToDAPI',false(1,length(fixedchan)),...
     'nbin',nbin,'avgmethod','median');
 
 Ys = cell(1,ncond); Rf = cell(1,ncond);
 Yall = cell(1,npos); Rfall = cell(1,npos); Rall = cell(1,npos);
-Yc = cell(1,ncond); Rc = cell(1,ncond);
 for cidx = 1:ncond
     pidxs = (cidx - 1)*ppc + (1:ppc);
     
@@ -83,25 +72,20 @@ for cidx = 1:ncond
     end
     Ys{cidx} = cell2mat(fixeddata);% Rf{cidx} = repmat(rs{1},ppc,1);
     Rf{cidx} = cell2mat(rs);
-    
-    [Y,~,~,edges] = newRadialProfile(lt.fixed_position(pidxs),fixedchan,fixedopts);
-    Yc{cidx} = Y([1:end,end],:); Rc{cidx} = edges;
 end
 
-%normalize
 maxvals = cellfun(@(x) max(x,[],1),Ys,'UniformOutput',false);
 maxvals = max(cell2mat(maxvals'),[],1);
+
 minvals = cellfun(@(x) min(x,[],1),Ys,'UniformOutput',false);
 minvals = min(cell2mat(minvals'),[],1);
 
 Ynorm = cellfun(@(x) (x - minvals)./(maxvals - minvals),Ys,'UniformOutput',false);
 Yall = cellfun(@(x) (x - minvals)./(maxvals - minvals),Yall,'UniformOutput',false);
-Yc = cellfun(@(x) (x - minvals)./(maxvals - minvals),Yc,'UniformOutput',false);
-
-cls = fixedMeta.channelLabel(fixedchan);
 
 
-%% get overall profiles for each gene in each condition
+%% plot overall profiles for each gene in each condition as fate maps
+cmode = 'rgb';
 chan = [1 2 3];
 nc = length(chan);
 
@@ -132,7 +116,7 @@ opts = struct('Rmax',350,...
     'colorMode','rgb',...
     'rmode', 'edges');
 
-for cidx = 1:ncond
+for cidx = 1:2
     pidxs = (cidx - 1)*ppc + 1:cidx*ppc;
     edges = mean(cell2mat(Rfall(pidxs)),2); %Rfall{pidxs(1)}
 %     [clusterim, clusterlabel, savelabel] =...
@@ -159,7 +143,7 @@ liveopts = struct('fields',{livefield},'normalizeToDAPI',false,'nbin',nbin,...
 X = NaN(nbin+1,ntime,ncond); R = NaN(nbin+1,ntime,ncond);
 Err = NaN(nbin+1,ntime,ncond); T = repmat(tvec,nbin+1,1);
 colors = turbo(nbin);
-% colors = colors(end:-1:1,:);
+colors = colors(end:-1:1,:);
 scale = 0.1;
 for cidx = 1:ncond
     pidxs = (cidx - 1)*ppc + 1:cidx*ppc;
@@ -167,43 +151,17 @@ for cidx = 1:ncond
     disp(condlabel)
     for ti = 1:ntime
         liveopts.t = ti;
-%         fprintf('time = %d\n',ti)
         [profiles,err,rad,edges] = newRadialProfile(lt.live_position(pidxs),livechan,liveopts);
         X(:,ti,cidx) = profiles([1:end,end]); R(:,ti,cidx) = edges; Err(:,ti,cidx) = err([1:end,end]);
     end
-    
-    savename = strcat('kymographs_SMAD4_nonorm_',condlabel,'.png');
-    figure('Position',figpos)
-    hold on
-    surf(T,R(:,:,cidx),X(:,:,cidx),'LineStyle','none')
-    cleanSubplot(fs); view(2); axis square; colormap turbo
-    xlim([min(T(:)) max(T(:))]); ylim([min(R(:)) max(R(:))]); caxis([0.55,0.85])
-    xlabel('time (hr)'); ylabel('edge distance (um)')
-    h = colorbar; h.Label.String = 'SMAD4 (N:C)';
-    h.Location = 'northoutside'; h.TickLabels = '';
-    
-    drawnow
-    savefigure(fullfile(savedir,savename));
-    
-    %radial time series
-    savename = strcat('timeseries_SMAD4_nonorm_',condlabel,'.png');
-    figure('Position',figpos); hold on
-    for jj = 1:nbin
-        plot(tvec,X(jj,:,cidx),'Color',colors(end-jj+1,:))
-    end
-    hold off
-    xlim([min(tvec) max(tvec)]); ylim([0.5,1])
-    cleanSubplot(fs); axis square
-    xlabel('time (hr)'); ylabel('SMAD4 (N:C)')
-    savefigure(fullfile(savedir,savename));
 end
 
-%normalize
-s4min = min(X(:, tvec > 0, 1),[],'all');
-s4max = mean(X(1, tvec > 0 & tvec < 9,1),'all');
+
+s4min = min(X(:,tvec>0,1),[],'all');
+s4max = mean(X(1,tvec>0 & tvec > 9,1),'all');
 X = (X - s4min)/(s4max - s4min);
 
-for cidx = 1:ncond
+for cidx = 1:2%ncond
     condlabel = condlabels{cidx};
     savename = strcat('kymographs_SMAD4_',condlabel,'.png');
     figure('Position',figpos)
@@ -230,15 +188,13 @@ for cidx = 1:ncond
     cleanSubplot(fs); axis square
     xlabel('time (hr)'); ylabel('SMAD4 (N:C)')
     drawnow
-    savefigure(fullfile(dataDir,'figures',savename));
+    savefigure(fullfile(savedir,savename));
 end
 
-%% signaling histories in radial bins in live data
-%live options
-livefield = {'NCratio'};
-livechan = 2;
-liveopts = struct('fields',{livefield},'normalizeToDAPI',false,'nbin',nbin,...
-    'maxval',2,'minval',0,'avgmethod','median');
+%% signaling histories in radial bins in individual colonies
+%previous block averaged colonies in the same condition, this block
+%collects a set of radially averaged signaling histories for each
+%individual colony
 
 tic
 Xs = cell(1,ncond); Rs = cell(1,ncond); Rt = cell(1,ncond);
@@ -273,6 +229,29 @@ for cidx = 1:ncond
 end
 toc
 
+%% plot time series colored by distance from the colony edge
+cidx = 1; %condition index: bmp4 without wnti
+X = cell2mat(Xs(cidx)'); R = cell2mat(Rs(cidx)');
+
+[~,I] = sort(R,'ascend');
+nhists = length(I);
+
+colors = turbo(nhists);
+colors = colors(end:-1:1,:);
+
+figure('Position',figurePosition(560,560))
+hold on
+for jj = 1:nhists
+    plot(tvec,X(I(jj),:),'Color',colors(end-jj+1,:))
+end
+hold off
+xlim([min(tvec) max(tvec)]);
+ylim([0,1.4])
+cleanSubplot(fs); axis square
+xlabel('time (hr)')
+ylabel('SMAD4 (N:C)')
+savefigure(fullfile(savedir,['historiesByDist_',condlabels{cidx}]))
+
 %% soft c means (fuzzy clustering)
 k = 3;
 cidx = 2;
@@ -282,7 +261,8 @@ order = [1 3 2];
 colors = {'r','b','g'};
 
 X = Xs{cidx}; R = Rs{cidx}; Y = Ynorm{cidx};
-[C, S, ~,~,~,MU] = pca(X);
+% [C, S, L,~,~,MU] = pca(X);
+[~, S, ~,~,~,~] = pca(X);
 
 ydata = Y(:,chans);
 [centers,U] = fcm(X,k);
@@ -346,7 +326,7 @@ xlabel(sprintf('PC%d',dim1)); ylabel(sprintf('PC%d',dim2))
 savefigure(fullfile(savedir,...
         ['PCA_fate',chanstr,'_',condlabels{cidx},sprintf('_PC%d',[dim1 dim2])]))
 
-%plot cluster centroids:
+%plot cluster centers:
 figure('Position',figpos); hold on
 for ki = 1:k
     plot(tvec,centers(I(ki),:),'Color',colors{ki},'LineWidth',lw)
@@ -370,6 +350,94 @@ ylabel('SMAD4 (N:C)')
 xlim(tvec([1,end])); ylim([0,1.4])%ylim([0.5,1])
 savefigure(fullfile(savedir,['cmeansAllHistories_',sprintf('k%d_',k),condlabels{cidx}]))
 
+%% show results with different numbers of clusters
+close all
+%pick a condition, get live and fixed data, do PCA
+cidx = 2;
+condlabel = condlabels{cidx};
+X = Xs{cidx}; R = Rs{cidx};
+[~, S, ~,~,~,~] = pca(X);
+
+%clustering
+ks = 2:5; %numbers of clusters to test
+figure('Position',figurePosition(560,560))
+for ii = 1:length(ks)
+    k = ks(ii);
+    
+    [~, U] = fcm(X,k);
+    [~,Idx] = max(U,[],1);
+    [idx, ~, ~, ~] = reorderIndices(Idx',R,k);
+    subplot(2,2,ii); hold on
+    for ki = 1:k
+        scatter(S(idx == ki,1),S(idx == ki,2),'filled')
+    end
+    cleanSubplot(fs)
+    xticklabels({}); yticklabels({})
+    if ismember(ii,[1 3])
+        ylabel('PC2')
+    end
+    if ismember(ii,[3 4])
+        xlabel('PC1')
+    end
+    drawnow
+    
+end
+savename = ['PCA_',condlabel,sprintf('_k%d',ks),'.png'];
+savefigure(fullfile(savedir,savename))
+
+ks = 2:5;
+figure('Position',figurePosition(560,560))
+clusterims = cell(length(ks),1);
+for ii = 1:length(ks)
+    k = ks(ii);
+    [~, U] = fcm(X,k);
+    [~,Idx] = max(U,[],1);
+    [~, profs, rs, ~] = reorderIndices(Idx',R,k);
+    [~,dprofs] = max(profs,[],2);
+
+    opts = struct('Rmax',350,...
+        'channels',{cellstr(strcat("cluster ",num2str((1:k)')))'},...
+        'colors',lines(k),...
+        'rmode', 'edges');
+    
+    [clusterim, ~] = profile2pattern_discrete(dprofs,rs,opts);
+    clusterims{ii} = clusterim{1};
+    subplot_tight(2,2,ii)
+    imshow(clusterim{1})
+    cleanSubplot
+    drawnow
+end
+
+% combine cluster maps into a single pie plot
+mhalf = round(size(clusterims{1},1)/2);
+[X,Y] = meshgrid(1:size(clusterims{1},2),1:size(clusterims{1},1));
+F = atan2((X - mhalf),-(Y - mhalf));
+
+N = length(clusterims);
+
+mask = cell(1,N); 
+for ii = 1:N
+    mask{ii} = ~imdilate(F < -pi + (ii-1)*2*pi/N | F > -pi + ii*2*pi/N,strel('disk',10));
+end
+
+lines = sum(cat(3,mask{:}),3) == 0;
+
+As = zeros(size(clusterims{1}),class(clusterims{1}));
+order = [3 1 2 4];
+for zi = 1:size(clusterims{1},3)
+    A = As(:,:,zi);
+    for ii = 1:N
+        cim = clusterims{order(ii)}(:,:,zi);
+        A(mask{ii}) = cim(mask{ii});
+    end
+    A(lines) = 1;
+    As(:,:,zi) = A;
+end
+
+figure; imshow(As)
+savename = ['pieslice_',condlabel,sprintf('_k%d',ks),'.png'];
+imwrite(As,fullfile(savedir,savename))
+
 %% c means + IWP2
 k = 2;
 cidx = 1;
@@ -379,7 +447,9 @@ order = [1 2];
 colors = {'r','g','b'};
 
 X = Xs{cidx}; R = Rs{cidx}; Y = Ynorm{cidx};
-S = (X-MU)*C;
+% [C, S, L,~,~,MU] = pca(X);
+[~, S, ~,~,~,~] = pca(X);
+% S = (X-MU)*C;
 
 ydata = Y(:,chans);
 [centers,U] = fcm(X,k);
@@ -424,7 +494,7 @@ cleanSubplot(fs)
 imwrite(clusterim{1},fullfile(savedir,['cmeansMapDiscrete_',condlabels{cidx},sprintf('_k%d',k),'.png']))
 imwrite(fuzzyim{1},fullfile(savedir,['cmeansMapFuzzy_',condlabels{cidx},sprintf('_k%d',k),'.png']))
 
-%pca plot colored for 
+%pca plot colored for cluster assignment
 dim1 = 1; dim2 = 2;
 figure('Position',figpos)
 scatter(S(:,1),S(:,2),30,col,'filled')
@@ -469,8 +539,8 @@ savefigure(fullfile(savedir,['cmeansAllHistories_',sprintf('k%d_',k),condlabels{
 
 %% manually split up the branches in PCA space
 cidx = 1;
-X = cell2mat(Xs(cidx)'); R = cell2mat(Rs(cidx)');
-[C, S, L,~,~,MU] = pca(X);
+X = cell2mat(Xs(cidx)'); R = cell2mat(Rs(cidx)'); Y = cell2mat(Ys(cidx)');
+[~, S, ~,~,~,~] = pca(X);
 
 k = 2;
 xy = S(:,[1,2]);
@@ -552,8 +622,6 @@ elseif k == 2
     order = [1 2 0];
 end
 
-%%
-% figure('Position',figurePosition(560*4,560))
 for ii = 1:size(Idxs,2)
     [idx, profs, rs, ~] = reorderIndices(Idxs{ii},R,k);
 %     subplot(1,4,ii); hold on
@@ -583,38 +651,31 @@ for ii = 1:size(Idxs,2)
         ['fateHandDrawn_',sprintf('k%d_',k),condlabels{cidx},sprintf('_split%d.png',ii)]))
 end
 
-
-
-%% plot time series colored by edge distance
-cidx = 2;
-X = cell2mat(Xs(cidx)'); R = cell2mat(Rs(cidx)'); Y = cell2mat(Ys(cidx)');
-
-[~,I] = sort(R,'ascend');
-nhists = length(I);
-
-colors = turbo(nhists);
-% colors = colors(end:-1:1,:);
-
-figure('Position',figurePosition(560,560))
-hold on
-for jj = 1:nhists
-    plot(tvec,X(I(jj),:),'Color',colors(end-jj+1,:))
+for ii = 1:size(Idxs,2)
+    [idx, ~, ~, ~] = reorderIndices(Idxs{ii},R,k);
+%     subplot(1,4,ii); hold on
+    figure('Position',figurePosition(560,round(560/2*0.95))); hold on
+    for ki = 1:k
+        mask = idx == ki;
+        scatter(xy(mask,1),xy(mask,2),30,colors{ki},'filled')
+    end
+    cleanSubplot(fs);% axis square
+    xlabel('PC1'); ylabel('PC2')
+    savefigure(fullfile(savedir,...
+        ['PCA_handdrawn_',sprintf('k%d_',k),condlabels{cidx},sprintf('_split%d_narrow.png',ii)]))
+    
+    for ki = 1:k
+        line(vs{ki}([1:end,1],1),vs{ki}([1:end,1],2),'LineWidth',2,'Color','k')
+    end
+    savefigure(fullfile(savedir,...
+        ['PCA_handdrawn_',sprintf('k%d_',k),condlabels{cidx},sprintf('_split%d',ii),'_narrow_withbox.png']))
 end
-hold off
-xlim([min(tvec) max(tvec)]);
-ylim([0,1.4])
-cleanSubplot(fs); axis square
-xlabel('time (hr)')
-ylabel('SMAD4 (N:C)')
-savefigure(fullfile(savedir,['historiesByDist_',condlabels{cidx}]))
-
-
-
 
 %% local functions
 
 function [idx, profs, rs, I] = reorderIndices(Idx,R,k)
-%organize the cluster indices in order of increasing average radial profile
+%organize the cluster indices in order of increasing average radial
+%position
 means = NaN(1,k);
 for ki = 1:k
     means(ki) = mean(R(Idx == ki));
@@ -656,9 +717,6 @@ for ii = 1:length(rs)
 end
 
 end
-
-
-
 
 
 

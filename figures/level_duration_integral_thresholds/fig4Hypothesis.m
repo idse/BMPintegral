@@ -91,7 +91,7 @@ for ii = 1:length(titles)
     title(titles{ii})
     
     if ii == 1
-        legend('amnion','pluripotent','Location','southwest','FontSize',lfs)
+        legend('amnion-like','pluripotent','Location','southwest','FontSize',lfs)
     end
     
     pos = get(gca,'Position');

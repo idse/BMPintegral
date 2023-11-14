@@ -2,9 +2,10 @@ clear; close all; clc
 
 %% setup, load data
 scriptPath = fileparts(matlab.desktop.editor.getActiveFilename);
+% dataDir = fullfile(scriptPath,'data');
 dataDir = scriptPath;
 %save figures in a subfolder of where the script is located
-savedir = fullfile(dataDir,'figures');
+savedir = fullfile(scriptPath,'figures');
 if ~exist(savedir,'dir'), mkdir(savedir); end
 
 %tvec - time points at which SMAD4 and SOX2 are sampled
@@ -36,8 +37,6 @@ SMAD4_220629 = preprocess_SMAD4_220629(SMAD4_220629);
 SMAD4_220629 = SMAD4_220629(1:ntime,:);
 SMAD4_ideal = makeIdealS4(tvec,s4levels);
 
-trainconds = [1:8,17];
-nconds = length(trainconds);
 treatmentTime = 4;
 
 fs = 28; lfs = 20; lw = 3;
@@ -73,6 +72,69 @@ ISL1n(ISL1n < 0) = 0;
 
 %initial SOX2 (should be 1 because of normalization)
 y0 = mean(SOX2(tvec <= 0,:),'all');
+
+%% early SOX2 slope vs SMAD4 integral
+figpos = figurePosition(560,560);
+
+tend = 16;
+tmask = tvec > 0 & tvec < tend;
+% levels = mean(SMAD4(tmask,:),1);
+levels = mean(SMAD4(tmask,:),1)*tend/tvec(end);
+xx = tvec(tmask); xx = xx(:);
+xinv = pinv([xx,ones(length(xx),1)]);
+
+figure
+mbs = NaN(2,ncond);
+for ii = 1:ncond
+    yy = SOX2(tmask,ii);
+    mb = xinv*yy;
+    mbs(:,ii) = mb;
+    cla
+    plot(tvec,SOX2(:,ii),'o')
+    hold on
+    plot(tvec,mb(1)*tvec + mb(2))
+    ylim([0,max(SOX2,[],'all')])%ylim([75,3500])
+    xlim(tvec([1,end]))
+    title(meta.conditions{ii})
+    disp(meta.conditions{ii})
+    fprintf('m = %g, b = %g\n',mb(1),mb(2))
+    xline(16,'Color','k'); xline(0,'Color','k');
+    % drawnow
+    pause(0.25)
+end
+
+conds = {[1:8,17],9:17};
+legstr = meta.conditions(conds{1});
+legstr = strrep(legstr,'LDN',''); legstr = strrep(legstr,',42hr','');
+figure('Position',figpos); hold on
+for ii = 1:length(conds)
+    plot(mbs(1,conds{ii}),'o','LineWidth',lw,'MarkerSize',15)
+end
+legend('42hr', '32hr','Location','northwest')
+cleanSubplot(fs); axis square
+xticks(1:length(conds{1})); xticklabels(legstr); xtickangle(45)
+ylabel('SOX2 slope (au / hr)')
+xlabel('BMPRi (nM)')
+
+figure('Position',figpos); hold on
+conds = {[1:8,17],9:17};
+for ii = 1:length(conds)
+    plot(levels(conds{ii}),tend*mbs(1,conds{ii}),'x','LineWidth',lw,'MarkerSize',15)
+end
+
+ll = levels';
+linv = pinv([ll,ones(size(ll))]);
+mb = tend*linv*mbs(1,:)';
+ls = sort(ll);
+plot(ls,mb(1)*ls + mb(2),'LineWidth',lw,'LineStyle','--','Color',[0,0,0,0.65])
+
+legend('42hr', '32hr','Location','northeast')
+cleanSubplot(fs); axis square
+
+ylabel('\Delta SOX2 (au)') 
+xlabel('SMAD4 (N:C) integral') 
+
+savefigure(fullfile(dataDir,'figures',[dset,'_SOX2changevS4int']))
 
 %% SMAD4-SOX2 inhibition function
 %on short intervals along the SOX2 histories, find the average SMAD4
@@ -126,20 +188,10 @@ lft = fittype(@(beta,lambda,alpha,x,y) beta - lambda*x - alpha*y,...
     'independent', {'x', 'y'}, 'dependent', 'z', 'options', lfo);
 [fitobject,gof] = fit([x,y],z,lft);
 
-% lfo = fitoptions('Method','NonlinearLeastSquares',...
-%                'Lower',[0,0],...
-%                'Upper',[Inf,Inf],...
-%                'StartPoint',[0.058, 0.058]);
-% lft = fittype(@(lambda,alpha,x,y) alpha - lambda*x - alpha*y,...
-%     'independent', {'x', 'y'}, 'dependent', 'z', 'options', lfo);
-% [fitobject,gof] = fit([x,y],z,lft);
-
 lambda = fitobject.lambda;
 alpha = fitobject.alpha;
 beta = fitobject.beta;
-% beta = fitobject.alpha;
 
-% figure('Position',figurePosition(3*560,560))
 subplot_tight(1,3,2,margin); hold on
 scatter3(x,y,z,'filled')
 
@@ -154,67 +206,20 @@ colorbar
 
 subplot_tight(1,3,3,margin); hold on
 zp = beta - lambda*x - alpha*y;
-% figure('Position',figurePosition(560,560)); hold on
 colorscatter(x,y,z - zp)
 cleanSubplot; axis square; colormap turbo
 xlabel('SMAD4'); ylabel('SOX2'); h = colorbar; h.Label.String = 'residuals';
 title('residuals')
 
-savefigure(fullfile(dataDir,'planeFitTodSOX2dt.png'))
-
-%%
-% xs = linspace(min(x),max(x),200);
-% ys = linspace(min(y),max(y),200);
-xx = linspace(0,1.3,500);
-yy = linspace(0,1,500);
-
-Ka = 0.85;
-na = 4;
-betaa = 0.075;
-lambdas = 0.04;
-alphas = 0.105;
-betas = 0.055;
-
-% [Xs,Ys] = meshgrid(xs,ys);
-[Xs,Ys] = meshgrid(xx,yy);
-Zs = betas + betaa*Ys.^na./(Ka^na + Ys.^na) - lambdas*Xs - alphas*Ys;
-
-figure; hold on
-subplot(1,2,1); hold on
-scatter3(x,y,z,'filled')
-surf(Xs,Ys,Zs,'LineStyle','none')
-xlabel('SMAD4'); ylabel('SOX2'); h = colorbar; h.Label.String = 'dydt';
-cleanSubplot; axis square; colormap turbo
-title('fit')
-colorbar
-
-subplot(1,2,2); hold on
-scatter3(x,y,z,'filled')
-xx = linspace(0,1.3,500);
-yy = linspace(0,1,500);
-[XX,YY] = meshgrid(xx,yy);
-surf(XX,YY,beta - lambda*XX - alpha*YY,'LineStyle','none')
-xlabel('SMAD4'); ylabel('SOX2'); h = colorbar; h.Label.String = 'dydt';
-cleanSubplot; axis square; colormap turbo
-title('fit')
-colorbar
+savefigure(fullfile(savedir,'planeFitTodSOX2dt.png'))
 
 %% model for ISL1 accumulation in response to SMAD4 and SOX2
 tmax = 42;
-ttmax = find(tvec == tmax);
-T = tvec(treatmentTime:ttmax)';
-ntime = length(T);
-
 tspan = [0,tmax];
 ic = 0;
-
-%choose a model: ideal, hill1, or hill2
-% model = 'ideal';
-
-
-%start with manually chosen values, then try random sampling?
-alphai = 0.08;%0.0363;
-lambdai = 0.12;%0.0329;
+%initialize parameters
+alphai = 0.08;
+lambdai = 0.12;
 
 % opts = struct('betai',betai,'alphai',alphai,'Ksi',0.5,'Ks4',0.5,'n',2);
 opts = struct(...
@@ -258,9 +263,7 @@ for ri = 1:nrepeats
     parfor idx = 1:nconds
         cidx = trainconds(idx);
         S4 = SMAD4(:,cidx); S2 = SOX2(:,cidx); %#ok<PFBNS>
-        [~,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic);
-%         [~,y] = ode45(@(t,y) ISL1_idealized(t,y,tvec,S4,S2,newopts), tspan, ic);
-%         [~,y] = ode45(@(t,y) ISL1_hilln(t,y,tvec,S4,S2,newopts), tspan, ic);
+        [~,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic); %#ok<PFTUSW>
         V(idx) = y(end);
     end
     
@@ -290,9 +293,7 @@ for ri = 1:nrepeats
         parfor idx = 1:nconds
             cidx = trainconds(idx);
             S4 = SMAD4(:,cidx); S2 = SOX2(:,cidx); %#ok<PFBNS>
-            [~,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic);
-%             [~,y] = ode45(@(t,y) ISL1_idealized(t,y,tvec,S4,S2,newopts), tspan, ic);
-%             [~,y] = ode45(@(t,y) ISL1_hilln(t,y,tvec,S4,S2,newopts), tspan, ic);
+            [~,y] = ode45(@(t,y) ISL1_hybrid(t,y,tvec,S4,S2,newopts), tspan, ic); %#ok<PFTUSW>
             V(idx) = y(end);
         end
         %error with new parameter values
@@ -706,11 +707,9 @@ paramname = 'paramValues_run05.mat';
 
 % load(fullfile(paramdir,paramname),'newopts')
 load(fullfile(paramdir,paramname),'thetas','fields','costs')
-[cmin,I] = min(costs);
+[~,I] = min(costs);
 theta = thetas(:,I);
 newopts = theta2opts(theta,opts,fields);
-
-%%
 tspan = [0 42];
 
 conds = {[1:8,17],[9:16,17]};
@@ -789,248 +788,6 @@ for jj = 1:length(ISL1s)
     savefigure(fullfile(paramdir,...
         strcat(savelabels{jj},'_v_integral.png')))
 end
-
-%% model with transcript included
-
-paramdir = fullfile(dataDir,'SOX2_ISL1_autoreg','sigma_em5_temp_em0');
-paramname = 'paramValues_run05.mat';
-
-% load(fullfile(paramdir,paramname),'newopts')
-load(fullfile(paramdir,paramname),'thetas','fields','costs')
-[cmin,I] = min(costs);
-theta = thetas(:,I);
-newopts = theta2opts(theta,opts,fields);
-
-newopts.alphat = 10*newopts.alphas; %transcript half life is much shorter than protein half life
-
-tspan = [0 42];
-
-icT = (newopts.betas + newopts.betaa/(newopts.Ka^newopts.na + 1))/newopts.alphat;
-
-% conds = {[1:8,17],[9:16,17]};
-conds = {1:8,9:16};
-% ax = gobjects(length(conds),1);
-legpos = [0.725 0.3634 0.2286 0.5563];
-legstr = meta.conditions(conds{1});
-legstr = strrep(legstr,'LDN',''); legstr = strrep(legstr,',42hr',''); legstr = strrep(legstr,'mTeSR','X');
-titles = {'42 hours','32 hours'}; savelabels = {'42hr','32hr'};
-
-sISL1 = NaN(length(conds{1}),length(conds));
-mISL1 = NaN(length(conds{1}),length(conds));
-errISL1 = NaN(length(conds{1}),length(conds));
-
-
-for ii = 1:length(conds)
-    colors = turbo(length(conds{ii}));
-    colors = colors(end:-1:1,:);
-    % figure('Position',figurePosition([560 560]))
-    figure('WindowState','maximized')
-    hold on
-    p = gobjects(length(conds{ii}),1);
-    ax = gobjects(length(conds{ii}),1);  
-    for jj = 1:length(conds{ii})
-        ax(jj) = subplot_tight(2,4,jj,0.06); hold on
-        cidx = conds{ii}(jj);
-        S4 = SMAD4(:,cidx);
-        % ic = [mean(SOX2(1:treatmentTime,cidx));0];
-        ic = [1;0;icT];
-        [t,y] = ode45(@(t,y) SOX2_ISL1_autoreg_withtranscript(t,y,tvec,S4,newopts), tspan, ic);
-        plot(t,y(:,1),'LineWidth',3,'Color',[colors(jj,:),0.5])
-        p(jj) = plot(tvec,SOX2(:,cidx),'LineWidth',1.5,'Color',[colors(jj,:),1]);
-        plot(t,y(:,3)/icT,':','LineWidth',3,'Color',[colors(jj,:),0.5])
-        sISL1(jj,ii) = y(end,2);
-        mISL1(jj,ii) = ISL1n(cidx);
-        errISL1(jj,ii) = ISL1err(cidx);
-        cleanSubplot(18); axis square
-        title(meta.conditions{cidx})
-        if jj == length(conds{ii})
-            legend({'simulated','target','mRNA'},'Location','southeast')
-        end
-        ylabel('GFP::SOX2 (au)')
-        xlabel('time (hr)')
-    end
-    hold off
-    linkaxes(ax)
-    
-    xlim([min(tvec),max(tvec)])
-    ylim([min(SOX2,[],'all'), max(SOX2,[],'all')] + [-0.05,0.05])
-    
-    % savefigure(fullfile(dataDir,'figures',...
-    %     strcat('SOX2_',savelabels{ii},'_datavmodel.png')))
-    % savefigure(fullfile(paramdir,...
-    %     strcat('SOX2_',savelabels{ii},'_datavmodel.png')))
-    % 
-    % if ii == 1
-    %     lgd = legend(p,legstr,'Position',legpos,'FontSize',lfs);
-    %     title(lgd,{'BMPRi','(nM)'},'FontSize',lfs)
-    %     savefigure(fullfile(dataDir,'figures',...
-    %         strcat('SOX2_',savelabels{ii},'_datavmodel_withlegend.png')))
-    %     savefigure(fullfile(paramdir,...
-    %         strcat('SOX2_',savelabels{ii},'_datavmodel_withlegend.png')))
-    % end
-end
-
-
-%%
-ISL1s = {sISL1,mISL1};
-ylabels = {'simulated ISL1 (au)','ISL1 (au)'};
-legstr = {'42hr','32hr'}; 
-savelabels = {'ISL1simulated','ISL1measured'};
-%add error bars to measured ISL1?
-for jj = 1:length(ISL1s)
-    figure('Position',figurePosition(560,560)); hold on
-    for ii = 1:length(conds)
-        if jj == 1
-            plot(integrals(conds{ii}),ISL1s{jj}(:,ii),'-x','LineWidth',lw)
-        elseif jj == 2
-            errorbar(integrals(conds{ii}),ISL1s{jj}(:,ii),ISL1err(conds{ii}),'LineWidth',lw)
-        end
-    end
-    legend(legstr,'Location','northwest','FontSize',lfs)
-    cleanSubplot(fs); axis square
-    xlabel('SMAD4 integral')
-    ylabel(ylabels{jj})
-    
-    savefigure(fullfile(dataDir,'figures',...
-        strcat(savelabels{jj},'_v_integral.png')))
-    savefigure(fullfile(paramdir,...
-        strcat(savelabels{jj},'_v_integral.png')))
-end
-
-
-%% early SOX2 slope vs SMAD4 level
-figpos = figurePosition(560,560);
-
-tmask = tvec > 0 & tvec < 16;
-levels = mean(SMAD4(tmask,:),1);
-xx = tvec(tmask); xx = xx(:);
-xinv = pinv([xx,ones(length(xx),1)]);
-
-figure
-mbs = NaN(2,ncond);
-for ii = 1:ncond
-    yy = SOX2(tmask,ii);
-    mb = xinv*yy;
-    mbs(:,ii) = mb;
-    cla
-    plot(tvec,SOX2(:,ii),'o')
-    hold on
-    plot(tvec,mb(1)*tvec + mb(2))
-    ylim([0,max(SOX2,[],'all')])%ylim([75,3500])
-    xlim(tvec([1,end]))
-    title(meta.conditions{ii})
-    disp(meta.conditions{ii})
-    fprintf('m = %g, b = %g\n',mb(1),mb(2))
-    xline(16,'Color','k'); xline(0,'Color','k');
-%     drawnow
-    pause(0.25)
-end
-
-conds = {[1:8,17],9:17};
-legstr = meta.conditions(conds{1});
-legstr = strrep(legstr,'LDN',''); legstr = strrep(legstr,',42hr','');
-figure('Position',figpos); hold on
-for ii = 1:length(conds)
-    plot(mbs(1,conds{ii}),'o','LineWidth',lw,'MarkerSize',15)
-end
-legend('42hr', '32hr','Location','northwest')
-cleanSubplot(fs); axis square
-xticks(1:length(conds{1})); xticklabels(legstr); xtickangle(45)
-ylabel('SOX2 slope (au / hr)')
-xlabel('BMPRi (nM)')
-% savefigure(fullfile(dataDir,'figures','SOX2slopevconditions'))
-
-figure('Position',figpos); hold on
-conds = {[1:8,17],9:17};
-for ii = 1:length(conds)
-    plot(levels(conds{ii}),mbs(1,conds{ii}),'x','LineWidth',lw,'MarkerSize',15)
-end
-
-ll = levels';
-linv = pinv([ll,ones(size(ll))]);
-mb = linv*mbs(1,:)';
-ls = sort(ll);
-plot(ls,mb(1)*ls + mb(2),'LineWidth',lw,'LineStyle','--','Color',[0,0,0,0.65])
-
-% plot(levels(17),mbs(1,17),'o','LineWidth',lw,'Color','k')
-legend('42hr', '32hr','Location','northeast')
-cleanSubplot(fs); axis square
-% xticks(1:9); xticklabels([legstr,{'mTeSR'}]); xtickangle(45)
-ylabel('SOX2 slope (au / hr)')
-xlabel('SMAD4 level')
-savefigure(fullfile(dataDir,'figures',[dset,'_SOX2slopevlevel']))
-
-%% early SOX2 slope vs SMAD4 integral
-figpos = figurePosition(560,560);
-
-tend = 16;
-tmask = tvec > 0 & tvec < tend;
-% levels = mean(SMAD4(tmask,:),1);
-levels = mean(SMAD4(tmask,:),1)*tend/tvec(end);
-xx = tvec(tmask); xx = xx(:);
-xinv = pinv([xx,ones(length(xx),1)]);
-
-figure
-mbs = NaN(2,ncond);
-for ii = 1:ncond
-    yy = SOX2(tmask,ii);
-    mb = xinv*yy;
-    mbs(:,ii) = mb;
-    cla
-    plot(tvec,SOX2(:,ii),'o')
-    hold on
-    plot(tvec,mb(1)*tvec + mb(2))
-    ylim([0,max(SOX2,[],'all')])%ylim([75,3500])
-    xlim(tvec([1,end]))
-    title(meta.conditions{ii})
-    disp(meta.conditions{ii})
-    fprintf('m = %g, b = %g\n',mb(1),mb(2))
-    xline(16,'Color','k'); xline(0,'Color','k');
-    % drawnow
-    pause(0.25)
-end
-
-conds = {[1:8,17],9:17};
-legstr = meta.conditions(conds{1});
-legstr = strrep(legstr,'LDN',''); legstr = strrep(legstr,',42hr','');
-figure('Position',figpos); hold on
-for ii = 1:length(conds)
-    plot(mbs(1,conds{ii}),'o','LineWidth',lw,'MarkerSize',15)
-end
-legend('42hr', '32hr','Location','northwest')
-cleanSubplot(fs); axis square
-xticks(1:length(conds{1})); xticklabels(legstr); xtickangle(45)
-ylabel('SOX2 slope (au / hr)')
-xlabel('BMPRi (nM)')
-% savefigure(fullfile(dataDir,'figures','SOX2slopevconditions'))
-
-figure('Position',figpos); hold on
-conds = {[1:8,17],9:17};
-for ii = 1:length(conds)
-    plot(levels(conds{ii}),tend*mbs(1,conds{ii}),'x','LineWidth',lw,'MarkerSize',15)
-    % plot(levels(conds{ii}),mbs(1,conds{ii}),'x','LineWidth',lw,'MarkerSize',15)
-end
-
-ll = levels';
-linv = pinv([ll,ones(size(ll))]);
-mb = tend*linv*mbs(1,:)';
-% mb = linv*mbs(1,:)';
-ls = sort(ll);
-plot(ls,mb(1)*ls + mb(2),'LineWidth',lw,'LineStyle','--','Color',[0,0,0,0.65])
-
-% plot(levels(17),mbs(1,17),'o','LineWidth',lw,'Color','k')
-legend('42hr', '32hr','Location','northeast')
-cleanSubplot(fs); axis square
-% xticks(1:9); xticklabels([legstr,{'mTeSR'}]); xtickangle(45)
-
-% ylabel('SOX2 slope (au / hr)')
-% xlabel('SMAD4 level')
-
-ylabel('\Delta SOX2 (au)') 
-xlabel('SMAD4 (N:C) integral') 
-% savefigure(fullfile(dataDir,'figures',[dset,'_SOX2slopevlevel']))
-
-savefigure(fullfile(dataDir,'figures',[dset,'_SOX2changevS4int']))
 
 %% local functions
 

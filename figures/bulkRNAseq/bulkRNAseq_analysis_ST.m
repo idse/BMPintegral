@@ -2,7 +2,7 @@ clear; close all; clc
 
 %% load data
 scriptPath = fileparts(matlab.desktop.editor.getActiveFilename);
-dataDir = scriptPath;
+dataDir = fullfile(scriptPath,'data');
 
 T = struct();
 
@@ -67,6 +67,7 @@ doses = [0, 10, 30, 100, 300, 1000];
 
 % 2^M = (E^log(2))^M = E^log(2)M
 
+
 %% time series -> hierarchical clustering
 close all
 %methods: average, complete, single
@@ -86,13 +87,15 @@ if strcmp(dset,'time_cpm_lin') || strcmp(dset,'time_cpm')
     foldChanges = T.time_cpm.RowSums;
 elseif strcmp(dset,'time_fpkm_lin') || strcmp(dset,'time_fpkm')
     genes = T.time_fpkm.Symbol;
+    foldChanges = []; %<- need to calculate this for the fpkm stuff but not that hard
 end
 
-ydata = Ydata./max(Ydata,[],2);
-% plot specific genes of interest
+ydata = Ydata./max(Ydata,[],2); %normalize to maximum for plotting
+% plot sets of genes of interest
 IFgenes = {{'ISL1','TFAP2C','GATA3','HAND1'},...
-    {'TFAP2A','GATA2','GABRP','KRT7','TP63','CDX2'},{'POU5F1','SOX2','NANOG'}};
-savelabels = {'amnion','amnion_2','pluri'};
+    {'TFAP2A','GATA2','GABRP','KRT7','TP63','CDX2'},{'POU5F1','SOX2','NANOG'},{'ID1','ID2','ID3','ID4'}};
+savelabels = {'amnion','amnion_2','pluri','IDs'};
+legposes = [0.2315 0.67 0.277 0.248; 0.2327 0.5848 0.2768 0.3688; 0.6304 0.5589 0.2768 0.1875; 0.7494 0.2438 0.1661 0.2479];
 for ii = 1:length(IFgenes)
     figure('Position',figurePosition(560,560)); hold on
     for jj = 1:length(IFgenes{ii})
@@ -103,10 +106,8 @@ for ii = 1:length(IFgenes)
 %     plot(times,ydata(ismember(genes,IFgenes{ii}),:),'LineWidth',2)
     cleanSubplot(fs); axis square
     xlabel('time (hr)'); ylabel('normalized CPM')
-    legend(IFgenes{ii},'FontSize',lfs,'FontWeight','bold')
+    legend(IFgenes{ii},'FontSize',lfs,'FontWeight','bold','Position',legposes(ii,:));
     ylim([0,1])
-    disp('adjust legend')
-    pause
     savename = ['timeseriesexamples_',dset,'_',savelabels{ii}];
     savefigure(fullfile(dataDir,'hierarchical_clustering',savename))
 end
@@ -163,6 +164,7 @@ disp(strcat("using ", dist, " distance"))
 tic
 Y = pdist(Ydata,dist);
 toc
+disp('doing linking')
 disp(strcat("building clusters with ", method, " linkage"))
 tic
 Z = linkage(Y,method);
@@ -242,56 +244,6 @@ savename = strcat('hierarchical_',dset,'_',dist,'_',method,sprintf('_k%.2d.png',
 savename = fullfile(dataDir,'hierarchical_clustering',savename);
 savefigure(savename)
 
-
-%% heatmaps and analysis of genes within each cluster
-timelabels = cellstr(num2str(times'))'; timelabels = strrep(timelabels,' ','');
-ss = get(0,'screensize'); ss = ss(3:end); %screen size in pixels
-figure('Position',figurePosition(ss(1),ss(1)/k));
-for ki = 1:k
-    subplot(1,k,ki)
-    idxs = find(Idx == ki);
-    [~,I] = sort(invperm(idxs));
-    
-    imagesc(Ydata(idxs(I),:))
-%     imagesc(Ydata(idxs,:))
-    cleanSubplot(fs); axis square
-    title(sprintf('cluster %d',ki))
-    colormap turbo
-    caxis([0,1])
-    yticklabels({})
-    set(gca,'Xtick',[1,3,6],'XTickLabels',timelabels([1,3,6]))
-end
-
-savename = strcat('heatmaps',dset,'_',dist,'_',method,sprintf('_k%.2d.png',k));
-savename = fullfile(dataDir,'hierarchical_clustering',savename);
-savefigure(savename)
-
-% list of genes for each cluster
-cgenes = cell(1,k);
-for ki = 1:k
-    cgenes{ki} = genes(Idx == ki);
-end
-
-% list of genes of interest
-handgenes = {'SOX2','NANOG','POU5F1','ISL1','CDX2','HAND1','GATA3',...
-    'GATA2','TFAP2C','TFAP2A','TFAP2B','GABRP','SMAD1','SMAD2','SMAD3',...
-    'SMAD4','SMAD5','SMAD6','SMAD7','SMAD8','BMP2','BMP4','WNT6','WNT3',...
-    'WNT3A','NOG','CHRD','CER','KRT7','TP63','TEAD1','TEAD2','TEAD3','KLF4',...
-    'OTX2','DPPA3'};
-gidxs = zeros(size(handgenes));
-for gi = 1:length(handgenes)
-    I = find(cellfun(@(x) sum(strcmp(x,handgenes{gi})),cgenes));
-    if isempty(I)
-        gidxs(gi) = NaN;
-    else
-        gidxs(gi) = I;
-    end
-end
-chgenes = cell(1,k);
-for ki = 1:k
-    chgenes{ki} = handgenes(gidxs == ki)';
-end
-
 %% plot dendrogram and heatmap and show genes
 
 nt = size(Ydata,2);
@@ -306,9 +258,7 @@ mask = ~cellfun(@isempty,Is);
 hgenes = handgenes(mask); Is = cell2mat(Is(mask));
 
 ycoords = invperm(Is);
-% ycoords = outperm(Is);
 
-% figure('Position',figurePosition(560*1.3154,560))
 figure('Position',figurePosition(560/(iwidth/0.98),560))
 ax1 = subplot_tight(1,3,1);
 [~,~,outperm] = dendrogram(Z,0,'Orientation','left','ColorThreshold',cutoff);
@@ -336,7 +286,6 @@ end
 
 
 ax3 = subplot_tight(1,3,3);
-% text(0.025*ones(size(ycoords)),ycoords,hgenes,'FontWeight','bold')
 
 xlim([0,1]); ylim([1,size(Ydata,1)])
 cleanSubplot(1.5*fs); yticklabels({}); xticklabels({}); ax3.Box = 'off';
@@ -360,15 +309,8 @@ for ii = 1:length(tplot), tplot(ii).Visible = 'on'; end
 savename = [savename(1:end-4),'_withlabels.png'];
 savefigure(savename)
 
-% text((size(Ydata,2) + 0.525)*ones(size(ycoords)),ycoords,hgenes,'FontWeight','bold')
-% set(ax2,'Xlim',[0.5,8.5])
 
-% xlim([0,size(Ydata,2)+1])
-% cleanSubplot(fs); yticklabels({}); xticklabels({})
-% ylim([1,length(outperm)]); xlim([0.995,1.2])
-
-
-%% SMAD4 levels (single time point dataset)
+%% SMAD4 levels (dataset with a single time point and multiple signal levels)
 dset = 'dose_cpm_lin';
 Ydata = M.(dset);
 
@@ -388,15 +330,19 @@ geneI = find(cellfun(@(x) length(x) >= 3,genes));
 geneslong = genes(geneI);
 midxs = geneI(cellfun(@(x) strcmp(x(1:3),'MT-'),geneslong));
 mask = true(size(Ydata,1),1); mask(midxs) = false;
-Ydata = Ydata(mask,1:end-1); genes = genes(mask);
+Ydata = Ydata(mask,:); genes = genes(mask);
 
-%only analyze genes kept after filtering in the time-series data
+
+Ydata = Ydata(:,1:end-1);
+
+%only consider genes detected in both datasets
 [C,ia,ib] = intersect(genes,timegenes);
 Ydata = Ydata(ia,:)./timemax(ib);
 genes = genes(ia);
 meancpm = mean(Ydata,2);
 ngene = size(Ydata,1);
 tgenes = timegenes(ib); tfoldchange = timefoldchange(ib);
+tcluster = Idx(ib);
 
 if strcmp(dset(end-3:end),'_lin')
     foldChanges = log2(Ydata(:,1)./Ydata(:,5));
@@ -404,30 +350,9 @@ else
     foldChanges = Ydata(:,1) - Ydata(:,5);
 end
 
-%plot genes vs SMAD4 level
-IFgenes = {{'ISL1','TFAP2C','GATA3','HAND1'},{'SOX2','NANOG'},{'SOX2'}};
-savelabels = {'amnion','pluri','SOX2'};
-for ii = 1:length(IFgenes)
-    figure('Position',figurePosition(560,560)); hold on
-    for jj = 1:length(IFgenes{ii})
-        plot(SMAD4(1:end-1),Ydata(strcmp(genes,IFgenes{ii}{jj}),:),'-x',...
-            'LineWidth',lw,'MarkerSize',ms)
-    end
-    hold off
-    %     plot(times,ydata(ismember(genes,IFgenes{ii}),:),'LineWidth',2)
-    cleanSubplot(fs); axis square
-    xlabel('SMAD4 level'); ylabel('normalized CPM')
-    legend(IFgenes{ii},'FontSize',lfs,'FontWeight','bold')
-%     ylim([0,1])
-    disp('adjust legend')
-    pause
-    savename = ['correlationexamples_',dset,'_',savelabels{ii}];
-    savefigure(fullfile(dataDir,'dose_response',savename))
-end
-
-%% plot SOX2 vs SMAD4 level with an example fit line
+% plot SOX2 vs SMAD4 integral with an example fit line
 figure('Position',figurePosition(795,536)); hold on
-x = SMAD4(1:end-1)';
+x = SMAD4(1:end-1)'*4.5/42;
 y = Ydata(strcmp(genes,'SOX2'),:)';
 plot(x,y,'x','LineWidth',lw,'MarkerSize',15)
 
@@ -436,10 +361,10 @@ mb = xinv*y;
 plot(x,mb(1)*x + mb(2),'LineWidth',lw,'LineStyle','--','Color',[0,0,0,0.65])
 
 cleanSubplot(fs)%; axis square
-xlabel('SMAD4 level'); ylabel('SOX2 (norm CPM)')
+xlabel('SMAD4 (N:C) integral'); ylabel('SOX2 (norm CPM)')
 xlim([min(x),max(x)])
 
-savename = ['correlationfitex_',dset,'_SOX2.png'];
+savename = ['correlationfitex_',dset,'_SOX2_v_int.png'];
 savefigure(fullfile(dataDir,'dose_response',savename))
 
 %% correlation with SMAD4
@@ -452,21 +377,31 @@ for ii = 1:ngene
 end
 
 bthresh = 0.1; rthresh = 0.9;
-
+%least squares fit of cpm to smad4 N:C level for each gene to calculate
+%slopes scaled to maximum transcript levels in the time-series data
 pA = pinv([smad4', ones(length(smad4),1)]);
 mb = (pA*Ydata')';
 b = mb(:,1);
 bscale = b./max(Ydata,[],2);
 
-%list of genes of interest:
+%list of hand-picked genes to highlight on the scatterplot:
 mygenes = {'ISL1','SOX2','NANOG','TFAP2C','GATA3','HAND1','POU5F1'};
 showgenes = true;
 
+TFmask = false(size(genes));
+for ii = 1:length(genes)
+    if sum(strcmp(genes{ii},TFs)) > 0
+        TFmask(ii) = true;
+    end
+end
+
+
 % figure('Position',figurePosition([795,894]))
 figure('Position',figurePosition([795,536]))
-scatter(R,b,'.')
+scatter(R,b,10,repmat([0.5 0.5 0.5],length(genes),1),'filled'); hold on
+scatter(R(TFmask),b(TFmask),15,repmat(lines(1),sum(TFmask),1),'filled')
 cleanSubplot(fs)
-xlabel('corr with SMAD4 level'); ylabel('slope (normalized)')
+xlabel('corr with SMAD4'); ylabel('slope (normalized)')
 ylim([-0.75,0.75])
 xline(-rthresh,'LineWidth',1.5); xline(rthresh,'LineWidth',1.5);
 yline(bthresh,'LineWidth',1.5); yline(-bthresh,'LineWidth',1.5); %yline(0);
@@ -489,105 +424,49 @@ savename = strcat('corrvslopeannotated_',dset);
 savename = fullfile(dataDir,'dose_response',savename);
 savefigure(savename)
 
-
-%% more plots
-
+%smaller figure with full axis limits
 figure('Position',figpos)
-scatter(R,bscale,'.')
-cleanSubplot(fs); axis square; colormap turbo
-xlabel('R with SMAD4'); ylabel('scaled slope')
-if showgenes && true
-    hold on
-    I = ismember(genes,mygenes);
-    x = R(I); y = bscale(I);
-    scatter(x,y,15,'r','filled')
-    text(x,y,genes(I))
-end
-
-savename = strcat('corrvscaledslope_',dset);
+scatter(R,b,'.')
+cleanSubplot(fs); axis square
+xlabel('corr with SMAD4 level'); ylabel('slope (normalized)')
+% xline(-rthresh); xline(rthresh); yline(bthresh); yline(-bthresh);
+ylim([min(b),max(b)])
+savename = strcat('corrvslope_',dset,'_small');
 savename = fullfile(dataDir,'dose_response',savename);
 savefigure(savename)
 
-figure('Position',figpos)
-scatter(R,foldChanges,'.')
-cleanSubplot(fs); axis square; colormap turbo
-xlabel('R with SMAD4'); ylabel('log_2(fold change)')
+%% make a table of genes of interest and export to a csv file
 
-savename = strcat('corrvfoldchange_',dset);
-savename = fullfile(dataDir,'dose_response',savename);
-savefigure(savename)
+gene_name = tgenes;
+cluster_id = tcluster;
+slope = b;
+correlation = R;
 
-if showgenes && true
-    hold on
-    I = ismember(genes,mygenes);
-    x = R(I); y = foldChanges(I);
-    scatter(x,y,15,'r','filled')
-    text(x,y,genes(I),'FontWeight','bold')
+%label potential integrators
+nidx = tcluster(strcmp(tgenes,'SOX2')); pidx = tcluster(strcmp(tgenes,'GATA3')); %<- indices of negatively and positively regulated clusters of interest
+posgenes = R > rthresh & b > bthresh;
+neggenes = R < -rthresh & b < -bthresh;
+
+integrator = false(size(gene_name));
+integrator((cluster_id == pidx) & posgenes) = true;
+integrator((cluster_id == nidx) & neggenes) = true;
+
+cluster_name = cell(size(gene_name));
+for ii = 1:length(gene_name)
+    if cluster_id(ii) == pidx
+        cluster_name{ii} = 'early increasing';
+    elseif cluster_id(ii) == nidx
+        cluster_name{ii} = 'decreasing';
+    else
+        cluster_name{ii} = 'late increasing';
+    end
 end
 
-savename = strcat('corrvfoldchange_',dset,'annotated');
-savename = fullfile(dataDir,'dose_response',savename);
-savefigure(savename)
+CSVtable = table(gene_name, cluster_id, cluster_name, slope, correlation, integrator);
 
-figure('Position',figpos)
-scatter(R,meancpm,'.')
-cleanSubplot(fs); axis square; colormap turbo
-xlabel('R with SMAD4'); ylabel('mean CPM')
-
-%% find genes overlapping with clustered genes in time series
-
-% posgenes = genes(R > 0.9 & foldChanges > 1);
-posgenes = genes(R > rthresh & b > bthresh);
-pfoldchange = tfoldchange(R > rthresh & b > bthresh);
-% posgenes = genes(R > 0.9 & bscale > 1);
-% sharedpositives = cellfun(@(x) intersect(x,posgenes), cgenes, 'UniformOutput',false);
-sharedpositives = cell(size(cgenes));
-positivefoldchanges = cell(size(cgenes));
-for ii = 1:length(cgenes)
-    mask = ismember(posgenes,cgenes{ii});
-    sharedpositives{ii} = posgenes(mask);
-    positivefoldchanges{ii} = pfoldchange(mask);
-end
-
-% neggenes = genes(R < -0.9 & meancpm > 5);
-neggenes = genes(R < -rthresh & b < -bthresh);
-nfoldchange = tfoldchange(R < -rthresh & b < -bthresh);
-% sharednegatives = cellfun(@(x) intersect(x,neggenes), cgenes, 'UniformOutput',false);
-sharednegatives = cell(size(cgenes));
-negativefoldchanges = cell(size(cgenes));
-for ii = 1:length(cgenes)
-    mask = ismember(neggenes,cgenes{ii});
-    sharednegatives{ii} = neggenes(mask);
-    negativefoldchanges{ii} = nfoldchange(mask);
-end
-
-nidx = 2; pidx = 3; %<- indices of negatively and positively regulated clusters of interest
-% nidx = 1; pidx = 4;
-[nsort,nI] = sort(negativefoldchanges{nidx},'ascend');
-ngenes = sharednegatives{nidx}(nI);
-
-[psort,pI] = sort(positivefoldchanges{pidx},'descend');
-pgenes = sharedpositives{pidx}(pI);
-
-%% local functions
-function figpos = figurePosition(width,height)
-%make the 4 element position coordinates for a figure of specified width
-%and height to display in the center of the screen
-%width and height can be specified as separate inputs or as a single
-%variable as [width height]
-
-if ~exist('height','var')
-    wh = width;
-else
-    wh = [width,height];
-end
-
-ss = get(0,'screensize');
-ss = ss(3:4);
-
-figpos = [0.5*(ss - wh),wh];
-
-end
+writename = 'integratorgenecandidates.csv';
+writename = fullfile(dataDir,writename);
+writetable(CSVtable,writename);
 
 
 

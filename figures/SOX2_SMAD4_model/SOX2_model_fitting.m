@@ -4,9 +4,9 @@ clear; close all; clc
 %% setup, load data
 %location of this script
 scriptPath = fileparts(matlab.desktop.editor.getActiveFilename);
-dataDir = scriptPath;
+dataDir = fullfile(scriptPath,'data');
 %save figures in a subfolder of where the script is located
-savedir = fullfile(dataDir,'figures');
+savedir = fullfile(scriptPath,'figures');
 if ~exist(savedir,'dir'), mkdir(savedir); end
 
 %variable descriptions
@@ -221,6 +221,7 @@ saveas(gcf,fullfile(savedir,'SOX2_naivefitvdata.png'))
 %% plot model fit on data for conditions by duration
 
 conds = {[1:8,17],[9:16,17]};
+savelabels = {'42hr','32hr'};
 
 for ii = 1:length(conds)
     colors = turbo(length(conds{ii}));
@@ -665,7 +666,8 @@ end
 %% plot simulated and measured SOX2 vs time by duration
 close all
 
-paramdir = [scriptPath,'\avg_SOX2_idealS4_SMAD4\combined'];
+% paramdir = [scriptPath,'data','\avg_SOX2_idealS4_SMAD4\combined'];
+paramdir = fullfile(scriptPath,'data','avg_SOX2_idealS4_SMAD4','combined');
 paramname = 'paramValues_run04.mat';
 
 load(fullfile(paramdir,paramname),'newopts')
